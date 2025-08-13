@@ -15,6 +15,7 @@ import pdfRoutes from './routes/pdfRoutes.js';
 import testimonialsRoutes from './routes/testimonials.js';
 import lectureRoutes from './routes/lectureRoutes.js';
 import galleryRoutes from './routes/gallery.js';
+import lectureRequestRoutes from './routes/lectureRequestRoutes.js';
 
 // Load environment variables
 config();
@@ -89,6 +90,9 @@ app.use('/api/lectures', lectureRoutes);
 
 console.log('Registering Gallery routes at /api/gallery');
 app.use('/api/gallery', galleryRoutes);
+
+console.log('Registering Lecture Request routes at /api/lecture-requests');
+app.use('/api/lecture-requests', lectureRequestRoutes);
 
 // Fallback for unmatched routes
 app.use((req, res) => {

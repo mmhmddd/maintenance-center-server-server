@@ -530,7 +530,6 @@ router.post('/login', async (req, res) => {
       process.env.JWT_SECRET,
       { expiresIn: '1h' }
     );
-    console.log('تسجيل الدخول ناجح لـ:', email);
     res.json({ token });
   } catch (error) {
     console.error('خطأ في تسجيل الدخول:', error);
