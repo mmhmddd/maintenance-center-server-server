@@ -1,0 +1,11 @@
+.env
+node_modules/
+*.log
+*.tmp
+.env
+*.zip
+*.pdf
+*.mp4
+*.png
+*.jpg
+dist/
