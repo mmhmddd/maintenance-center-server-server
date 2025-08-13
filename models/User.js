@@ -38,7 +38,7 @@ const userSchema = new Schema({
     email: { type: String, required: true },
     phone: { type: String, required: true },
     grade: { type: String, required: false, trim: true },
-    subject: { type: String, required: false, trim: true }
+    subjects: [{ type: String, required: false, trim: true }]
   }],
   meetings: [{
     _id: { type: Schema.Types.ObjectId, auto: true },

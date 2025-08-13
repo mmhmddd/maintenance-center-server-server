@@ -11,8 +11,8 @@ import { fileURLToPath } from 'url';
 import fs from 'fs';
 import sendEmail from '../utils/email.js';
 import validator from 'validator';
-import crypto from 'crypto';
 import { v2 as cloudinary } from 'cloudinary';
+import crypto from 'crypto';  // Added missing import for crypto
 
 const router = express.Router();
 
@@ -296,6 +296,7 @@ router.get('/approved-members', async (req, res) => {
         numberOfStudents: user?.numberOfStudents || 0,
         subjects: user?.subjects || [],
         students: user?.students || [],
+        meetings: user?.meetings || [],
         lectures: user?.lectures || [],
         lectureCount: user?.lectureCount || 0,
         profileImage: user?.profileImage || null
@@ -366,8 +367,12 @@ router.put('/members/:id/update-details', async (req, res) => {
       return res.status(400).json({ message: 'الصف يجب أن يكون بين 1 و50 حرفًا إذا تم توفيره' });
     }
 
-    if (students.some(student => student.subject && !validator.isLength(student.subject, { min: 1, max: 100 }))) {
-      return res.status(400).json({ message: 'المادة يجب أن تكون بين 1 و100 حرف إذا تم توفيرها' });
+    if (students.some(student => student.subjects && !Array.isArray(student.subjects))) {
+      return res.status(400).json({ message: 'المواد يجب أن تكون مصفوفة' });
+    }
+
+    if (students.some(student => student.subjects && student.subjects.some(subject => !validator.isLength(subject, { min: 1, max: 100 })))) {
+      return res.status(400).json({ message: 'كل مادة يجب أن تكون بين 1 و100 حرف إذا تم توفيرها' });
     }
 
     const member = await JoinRequest.findById(req.params.id);
@@ -419,7 +424,7 @@ router.put('/members/:id/update-details', async (req, res) => {
 // Add a single student to a member
 router.post('/members/:id/add-student', async (req, res) => {
   try {
-    const { name, email, phone, grade, subject } = req.body;
+    const { name, email, phone, grade, subjects } = req.body;
     if (!name || !email || !phone) {
       return res.status(400).json({ message: 'الاسم، البريد الإلكتروني، والهاتف مطلوبة للطالب' });
     }
@@ -429,8 +434,11 @@ router.post('/members/:id/add-student', async (req, res) => {
     if (grade && !validator.isLength(grade, { min: 1, max: 50 })) {
       return res.status(400).json({ message: 'الصف يجب أن يكون بين 1 و50 حرفًا إذا تم توفيره' });
     }
-    if (subject && !validator.isLength(subject, { min: 1, max: 100 })) {
-      return res.status(400).json({ message: 'المادة يجب أن تكون بين 1 و100 حرف إذا تم توفيرها' });
+    if (subjects && !Array.isArray(subjects)) {
+      return res.status(400).json({ message: 'المواد يجب أن تكون مصفوفة' });
+    }
+    if (subjects && subjects.some(subject => !validator.isLength(subject, { min: 1, max: 100 }))) {
+      return res.status(400).json({ message: 'كل مادة يجب أن تكون بين 1 و100 حرف إذا تم توفيرها' });
     }
 
     const member = await JoinRequest.findById(req.params.id);
@@ -457,10 +465,24 @@ router.post('/members/:id/add-student', async (req, res) => {
       return res.status(400).json({ message: 'البريد الإلكتروني للطالب مستخدم بالفعل' });
     }
 
-    const newStudent = { name, email, phone, grade, subject };
+    const newStudent = { name, email, phone, grade, subjects: subjects || [] };
     user.students.push(newStudent);
     member.students.push(newStudent);
     user.numberOfStudents = (user.numberOfStudents || 0) + 1;
+
+    // Ensure subjects arrays are initialized before updating
+    if (!Array.isArray(user.subjects)) {
+      user.subjects = [];
+    }
+    if (!Array.isArray(member.subjects)) {
+      member.subjects = [];
+    }
+
+    // Update user.subjects to include any new subjects from the student's subjects
+    if (subjects && Array.isArray(subjects)) {
+      user.subjects = [...new Set([...user.subjects, ...subjects])];
+      member.subjects = [...new Set([...member.subjects, ...subjects])];
+    }
 
     await Promise.all([member.save(), user.save()]);
     console.log('تم إضافة الطالب:', { 
@@ -473,10 +495,11 @@ router.post('/members/:id/add-student', async (req, res) => {
       message: 'تم إضافة الطالب بنجاح',
       student: newStudent,
       numberOfStudents: user.numberOfStudents,
-      students: user.students
+      students: user.students,
+      subjects: user.subjects
     });
   } catch (error) {
-    console.error('خطأ في إضافة الطالب:', error);
+    console.error('خطأ في إضافة الطالب:', error.stack);  // Improved error logging with stack trace
     res.status(500).json({ message: 'خطأ في الخادم', error: error.message });
   }
 });
