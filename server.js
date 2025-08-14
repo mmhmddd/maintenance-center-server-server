@@ -7,6 +7,9 @@ import path from 'path';
 import fs from 'fs/promises';
 import { fileURLToPath } from 'url';
 import cloudinary from 'cloudinary';
+import cron from 'node-cron';
+import User from './models/User.js';
+import sendEmail from './utils/email.js';
 
 // Import routes
 import leaderboardRoutes from './routes/leaderboard.js';
@@ -63,7 +66,6 @@ app.use(cors({
   origin: process.env.FRONTEND_URL || 'https://www.qatrah-ghaith.com',
   credentials: true
 }));
-
 app.use(json());
 
 // Fallback for old upload routes to prevent unmatched errors
@@ -75,24 +77,70 @@ app.get('/api/Uploads/*', (req, res) => {
 // Register routes
 console.log('Registering Leaderboard routes at /api/leaderboard');
 app.use('/api/leaderboard', leaderboardRoutes);
-
 console.log('Registering API routes at /api');
 app.use('/api', apiRoutes);
-
 console.log('Registering PDF routes at /api/pdf');
 app.use('/api/pdf', pdfRoutes);
-
 console.log('Registering Testimonials routes at /api/testimonials');
 app.use('/api/testimonials', testimonialsRoutes);
-
 console.log('Registering Lecture routes at /api/lectures');
 app.use('/api/lectures', lectureRoutes);
-
 console.log('Registering Gallery routes at /api/gallery');
 app.use('/api/gallery', galleryRoutes);
-
 console.log('Registering Lecture Request routes at /api/lecture-requests');
 app.use('/api/lecture-requests', lectureRequestRoutes);
+
+// Improved cron job for meeting reminders
+cron.schedule('* * * * *', async () => {
+  console.log('Checking meeting reminders...');
+  try {
+    const now = new Date();
+    const inOneHour = new Date(now.getTime() + 60 * 60 * 1000);
+    const users = await User.find({
+      'meetings.reminded': false,
+      'meetings.date': { $gte: now, $lte: inOneHour }
+    }).lean(); // Use lean() for better performance
+
+    const emailPromises = [];
+    for (const user of users) {
+      for (const meeting of user.meetings) {
+        if (meeting.reminded) continue;
+
+        // Calculate meeting time
+        const [hours, minutes] = meeting.startTime.split(':').map(Number);
+        const meetingTime = new Date(meeting.date);
+        meetingTime.setHours(hours, minutes, 0, 0);
+
+        // Reminder time (30 minutes before)
+        const reminderTime = new Date(meetingTime.getTime() - 30 * 60 * 1000);
+
+        if (now >= reminderTime && now < meetingTime) {
+          emailPromises.push(
+            sendEmail({
+              to: user.email,
+              subject: 'تذكير بموعد اجتماع',
+              text: `مرحبًا،\n\nتذكير: اجتماعك "${meeting.title}" بعد 30 دقيقة في ${meeting.date.toISOString().split('T')[0]} الساعة ${meeting.startTime}.\n\nتحياتنا,\nفريق قطرة غيث`,
+            }).then(() => {
+              console.log(`Sent reminder to ${user.email} for meeting ${meeting._id}`);
+              // Update reminded status
+              return User.updateOne(
+                { _id: user._id, 'meetings._id': meeting._id },
+                { $set: { 'meetings.$.reminded': true } }
+              );
+            }).catch((error) => {
+              console.error(`Failed to send reminder to ${user.email} for meeting ${meeting._id}:`, error);
+            })
+          );
+        }
+      }
+    }
+
+    await Promise.all(emailPromises);
+    console.log(`Processed ${emailPromises.length} reminders`);
+  } catch (error) {
+    console.error('Error in meeting reminder cron job:', error);
+  }
+});
 
 // Fallback for unmatched routes
 app.use((req, res) => {

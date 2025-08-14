@@ -798,7 +798,7 @@ router.post('/profile/meetings', authMiddleware, async (req, res) => {
       console.log('تم تهيئة مصفوفة المواعيد كمصفوفة فارغة');
     }
 
-    user.meetings.push({ title, date: parsedDate, startTime, endTime });
+    user.meetings.push({ title, date: parsedDate, startTime, endTime, reminded: false });  // جديد: أضف reminded false
     await user.save();
     console.log('تم إضافة الموعد:', user.meetings);
 
@@ -807,7 +807,8 @@ router.post('/profile/meetings', authMiddleware, async (req, res) => {
       title: meeting.title,
       date: meeting.date.toISOString().split('T')[0],
       startTime: meeting.startTime,
-      endTime: meeting.endTime
+      endTime: meeting.endTime,
+      reminded: meeting.reminded  // جديد: أضف في الرد إذا لزم
     }));
 
     res.json({ message: 'تم إضافة الموعد بنجاح', meetings: formattedMeetings });
@@ -850,6 +851,7 @@ router.put('/profile/meetings/:meetingId', authMiddleware, async (req, res) => {
     meeting.date = parsedDate;
     meeting.startTime = startTime;
     meeting.endTime = endTime;
+    meeting.reminded = false;  // جديد: إعادة تعيين reminded إلى false عند التحديث
 
     await user.save();
     console.log('تم تحديث الموعد:', user.meetings);
@@ -859,7 +861,8 @@ router.put('/profile/meetings/:meetingId', authMiddleware, async (req, res) => {
       title: meeting.title,
       date: meeting.date.toISOString().split('T')[0],
       startTime: meeting.startTime,
-      endTime: meeting.endTime
+      endTime: meeting.endTime,
+      reminded: meeting.reminded  // جديد
     }));
 
     res.json({ message: 'تم تحديث الموعد بنجاح', meetings: formattedMeetings });
@@ -899,7 +902,8 @@ router.delete('/profile/meetings/:meetingId', authMiddleware, async (req, res) =
       title: meeting.title,
       date: meeting.date.toISOString().split('T')[0],
       startTime: meeting.startTime,
-      endTime: meeting.endTime
+      endTime: meeting.endTime,
+      reminded: meeting.reminded  // جديد
     }));
 
     res.json({ message: 'تم حذف الموعد بنجاح', meetings: formattedMeetings });
@@ -952,6 +956,44 @@ router.post('/forgot-password', async (req, res) => {
     }
   } catch (error) {
     console.error('خطأ في طلب إعادة تعيين كلمة المرور:', error);
+    res.status(500).json({ message: 'خطأ في الخادم', error: error.message });
+  }
+});
+
+// Manually send meeting reminder
+router.post('/profile/meetings/:meetingId/remind', authMiddleware, async (req, res) => {
+  try {
+    const meetingId = req.params.meetingId;
+    if (!mongoose.Types.ObjectId.isValid(meetingId)) {
+      return res.status(400).json({ message: 'معرف الموعد غير صالح' });
+    }
+    const user = await User.findById(req.userId);
+    if (!user) {
+      return res.status(404).json({ message: 'المستخدم غير موجود' });
+    }
+    const meeting = user.meetings.id(meetingId);
+    if (!meeting) {
+      return res.status(404).json({ message: 'الموعد غير موجود' });
+    }
+    await sendEmail({
+      to: user.email,
+      subject: 'تذكير يدوي بموعد اجتماع',
+      text: `مرحبًا،\n\nهذا تذكير يدوي بموعدك "${meeting.title}" في ${meeting.date.toISOString().split('T')[0]} الساعة ${meeting.startTime}.\n\nتحياتنا,\nفريق قطرة غيث`,
+    });
+    console.log(`تم إرسال تذكير يدوي إلى ${user.email} للموعد ${meeting._id}`);
+    meeting.reminded = true;
+    await user.save();
+    const formattedMeetings = user.meetings.map(meeting => ({
+      _id: meeting._id,
+      title: meeting.title,
+      date: meeting.date.toISOString().split('T')[0],
+      startTime: meeting.startTime,
+      endTime: meeting.endTime,
+      reminded: meeting.reminded
+    }));
+    res.json({ message: 'تم إرسال التذكير اليدوي بنجاح', meetings: formattedMeetings });
+  } catch (error) {
+    console.error('خطأ في إرسال التذكير اليدوي:', error);
     res.status(500).json({ message: 'خطأ في الخادم', error: error.message });
   }
 });

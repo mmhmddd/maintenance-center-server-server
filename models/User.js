@@ -45,7 +45,8 @@ const userSchema = new Schema({
     title: { type: String, required: true },
     date: { type: Date, required: true },
     startTime: { type: String, required: true },
-    endTime: { type: String, required: true }
+    endTime: { type: String, required: true },
+    reminded: { type: Boolean, default: false }  
   }],
   lectures: [{
     link: { type: String, required: true },
