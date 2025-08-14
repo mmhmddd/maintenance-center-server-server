@@ -1,3 +1,4 @@
+// api.js (Backend - Updated with enhanced logging in delete meeting route)
 import express from 'express';
 import { hash, compare } from 'bcryptjs';
 import jwt from 'jsonwebtoken';
@@ -879,17 +880,19 @@ router.delete('/profile/meetings/:meetingId', authMiddleware, async (req, res) =
     console.log('تلقي طلب حذف موعد مع المعرف:', meetingId);
 
     if (!mongoose.Types.ObjectId.isValid(meetingId)) {
+      console.error('معرف الموعد غير صالح:', meetingId);
       return res.status(400).json({ message: 'معرف الموعد غير صالح' });
     }
 
     const user = await User.findById(req.userId);
     if (!user) {
+      console.error('المستخدم غير موجود للمعرف:', req.userId);
       return res.status(404).json({ message: 'المستخدم غير موجود' });
     }
 
     const meeting = user.meetings.id(meetingId);
     if (!meeting) {
-      console.log('الموعد غير موجود للمعرف:', meetingId);
+      console.error('الموعد غير موجود للمعرف:', meetingId);
       return res.status(404).json({ message: 'الموعد غير موجود' });
     }
 
