@@ -20,6 +20,8 @@ import lectureRoutes from './routes/lectureRoutes.js';
 import galleryRoutes from './routes/gallery.js';
 import lectureRequestRoutes from './routes/lectureRequestRoutes.js';
 
+process.env.TZ = 'Africa/Cairo';
+
 // Load environment variables
 config();
 
@@ -36,6 +38,10 @@ if (!process.env.FRONTEND_URL) {
 }
 if (!process.env.CLOUDINARY_CLOUD_NAME || !process.env.CLOUDINARY_API_KEY || !process.env.CLOUDINARY_API_SECRET) {
   console.error('Error: Cloudinary credentials are missing in .env file');
+  process.exit(1);
+}
+if (!process.env.GMAIL_USER || !process.env.GMAIL_APP_PASSWORD) {
+  console.error('Error: Gmail credentials are missing in .env file');
   process.exit(1);
 }
 
@@ -90,55 +96,93 @@ app.use('/api/gallery', galleryRoutes);
 console.log('Registering Lecture Request routes at /api/lecture-requests');
 app.use('/api/lecture-requests', lectureRequestRoutes);
 
-// Improved cron job for meeting reminders
-cron.schedule('* * * * *', async () => {
-  console.log('Checking meeting reminders...');
+// Cron job for daily meeting reminders (runs at 00:01 every day)
+cron.schedule('1 0 * * *', async () => {
+  console.log('Checking daily meeting reminders at:', new Date().toLocaleString('ar-EG', { timeZone: 'Africa/Cairo' }));
   try {
     const now = new Date();
-    const inOneHour = new Date(now.getTime() + 60 * 60 * 1000);
+    // Convert to UTC for query
+    const nowUTC = new Date(now.getTime() - 3 * 60 * 60 * 1000); // EEST is UTC+3
+    const startOfDayUTC = new Date(nowUTC);
+    startOfDayUTC.setUTCHours(0, 0, 0, 0);
+    const endOfDayUTC = new Date(nowUTC);
+    endOfDayUTC.setUTCHours(23, 59, 59, 999);
+
+    console.log(`Querying meetings for today UTC: ${startOfDayUTC.toISOString()} to ${endOfDayUTC.toISOString()}`);
+
+    // Find users with meetings today that haven't been reminded
     const users = await User.find({
       'meetings.reminded': false,
-      'meetings.date': { $gte: now, $lte: inOneHour }
-    }).lean(); // Use lean() for better performance
+      'meetings.date': { $gte: startOfDayUTC, $lte: endOfDayUTC }
+    }).lean();
+
+    console.log(`Found ${users.length} users with potential meetings to remind today`);
 
     const emailPromises = [];
     for (const user of users) {
-      for (const meeting of user.meetings) {
-        if (meeting.reminded) continue;
-
-        // Calculate meeting time
-        const [hours, minutes] = meeting.startTime.split(':').map(Number);
-        const meetingTime = new Date(meeting.date);
-        meetingTime.setHours(hours, minutes, 0, 0);
-
-        // Reminder time (30 minutes before)
-        const reminderTime = new Date(meetingTime.getTime() - 30 * 60 * 1000);
-
-        if (now >= reminderTime && now < meetingTime) {
-          emailPromises.push(
-            sendEmail({
-              to: user.email,
-              subject: 'تذكير بموعد اجتماع',
-              text: `مرحبًا،\n\nتذكير: اجتماعك "${meeting.title}" بعد 30 دقيقة في ${meeting.date.toISOString().split('T')[0]} الساعة ${meeting.startTime}.\n\nتحياتنا,\nفريق قطرة غيث`,
-            }).then(() => {
-              console.log(`Sent reminder to ${user.email} for meeting ${meeting._id}`);
-              // Update reminded status
-              return User.updateOne(
-                { _id: user._id, 'meetings._id': meeting._id },
-                { $set: { 'meetings.$.reminded': true } }
-              );
-            }).catch((error) => {
-              console.error(`Failed to send reminder to ${user.email} for meeting ${meeting._id}:`, error);
-            })
-          );
+      console.log(`Processing user: ${user.email}, Meetings count: ${user.meetings.length}`);
+      
+      // Collect all meetings for this user today
+      const meetingsToRemind = user.meetings.filter(meeting => {
+        if (meeting.reminded) {
+          console.log(`Meeting ${meeting._id} already reminded, skipping`);
+          return false;
         }
+        const meetingDate = new Date(meeting.date);
+        return meetingDate >= startOfDayUTC && meetingDate <= endOfDayUTC;
+      });
+
+      if (meetingsToRemind.length === 0) {
+        console.log(`No meetings to remind for user ${user.email}`);
+        continue;
       }
+
+      // Generate HTML for all meetings in one email
+      const meetingList = meetingsToRemind.map(meeting => `
+        <li>
+          <strong>العنوان:</strong> ${meeting.title}<br>
+          <strong>التاريخ:</strong> ${meeting.date.toISOString().split('T')[0]}<br>
+          <strong>الوقت:</strong> ${meeting.startTime}<br>
+          <strong>المدة:</strong> ${meeting.startTime} - ${meeting.endTime}
+        </li>
+      `).join('');
+
+      console.log(`Sending daily reminder to ${user.email} for ${meetingsToRemind.length} meetings`);
+      emailPromises.push(
+        sendEmail({
+          to: user.email,
+          subject: 'تذكير بمواعيد اليوم',
+          html: `
+            <h2>تذكير بمواعيد اليوم</h2>
+            <p>مرحبًا،</p>
+            <p>لديك ${meetingsToRemind.length} موعد${meetingsToRemind.length > 1 ? 'ات' : ''} اليوم:</p>
+            <ul>
+              ${meetingList}
+            </ul>
+            <p>يرجى الاستعداد للمواعيد.</p>
+            <p>تحياتنا،<br>فريق قطرة غيث</p>
+          `,
+        }).then(() => {
+          console.log(`Successfully sent daily reminder to ${user.email} for ${meetingsToRemind.length} meetings`);
+          // Update reminded status for all meetings
+          const updatePromises = meetingsToRemind.map(meeting =>
+            User.updateOne(
+              { _id: user._id, 'meetings._id': meeting._id },
+              { $set: { 'meetings.$.reminded': true } }
+            )
+          );
+          return Promise.all(updatePromises);
+        }).catch((error) => {
+          console.error(`Failed to send daily reminder to ${user.email}:`, error.message);
+          throw error;
+        })
+      );
     }
 
     await Promise.all(emailPromises);
-    console.log(`Processed ${emailPromises.length} reminders`);
+    console.log(`Processed ${emailPromises.length} daily meeting reminders`);
   } catch (error) {
-    console.error('Error in meeting reminder cron job:', error);
+    console.error('Error in daily meeting reminder cron job:', error.message, error.stack);
   }
 });
 
