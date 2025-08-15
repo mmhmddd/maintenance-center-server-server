@@ -63,7 +63,15 @@ const userSchema = new Schema({
   tokenExpire: {
     type: Date,
     default: null
-  }
+  },
+  messages: [{
+    content: { type: String, required: true },
+    createdAt: { type: Date, default: Date.now },
+    displayUntil: { type: Date, required: true, index: { expires: 0 } } // TTL index for auto-deletion
+  }]
 });
+
+// Ensure TTL index is created for automatic deletion
+userSchema.index({ 'messages.displayUntil': 1 }, { expireAfterSeconds: 0 });
 
 export default model('User', userSchema);

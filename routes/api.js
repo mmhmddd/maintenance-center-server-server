@@ -1,4 +1,4 @@
-// api.js (Backend - Updated with enhanced logging in delete meeting route)
+// api.js (Backend - Updated with enhanced logging and message management)
 import express from 'express';
 import { hash, compare } from 'bcryptjs';
 import jwt from 'jsonwebtoken';
@@ -13,7 +13,7 @@ import fs from 'fs';
 import sendEmail from '../utils/email.js';
 import validator from 'validator';
 import { v2 as cloudinary } from 'cloudinary';
-import crypto from 'crypto';  // Added missing import for crypto
+import crypto from 'crypto';
 
 const router = express.Router();
 
@@ -68,6 +68,14 @@ const authMiddleware = (req, res, next) => {
     console.error('خطأ في التحقق من الرمز:', error);
     res.status(401).json({ message: 'رمز غير صالح' });
   }
+};
+
+// Admin middleware
+const adminMiddleware = (req, res, next) => {
+  if (req.userRole !== 'admin') {
+    return res.status(403).json({ message: 'يجب أن تكون مسؤولاً للوصول إلى هذا الطريق' });
+  }
+  next();
 };
 
 // Submit a join request
@@ -500,7 +508,7 @@ router.post('/members/:id/add-student', async (req, res) => {
       subjects: user.subjects
     });
   } catch (error) {
-    console.error('خطأ في إضافة الطالب:', error.stack);  // Improved error logging with stack trace
+    console.error('خطأ في إضافة الطالب:', error.stack);
     res.status(500).json({ message: 'خطأ في الخادم', error: error.message });
   }
 });
@@ -546,6 +554,13 @@ router.get('/profile', authMiddleware, async (req, res) => {
       return res.status(404).json({ message: 'المستخدم غير موجود' });
     }
     const joinRequest = await JoinRequest.findOne({ email: user.email });
+
+    // Filter out expired messages for display
+    const currentDate = new Date();
+    user.messages = user.messages.filter(message => message.displayUntil > currentDate);
+
+    await user.save(); // Save to persist filtered messages
+
     console.log('تم جلب الملف الشخصي:', {
       userId: req.userId,
       numberOfStudents: user.numberOfStudents,
@@ -554,8 +569,10 @@ router.get('/profile', authMiddleware, async (req, res) => {
       meetings: user.meetings,
       lectures: user.lectures,
       lectureCount: user.lectureCount,
-      profileImage: user.profileImage
+      profileImage: user.profileImage,
+      messages: user.messages
     });
+
     res.json({
       success: true,
       message: 'تم جلب الملف الشخصي بنجاح',
@@ -569,7 +586,8 @@ router.get('/profile', authMiddleware, async (req, res) => {
           students: user.students || [],
           meetings: user.meetings || [],
           lectures: user.lectures || [],
-          lectureCount: user.lectureCount || 0
+          lectureCount: user.lectureCount || 0,
+          messages: user.messages || []
         },
         joinRequest: joinRequest ? {
           name: joinRequest.name,
@@ -799,7 +817,7 @@ router.post('/profile/meetings', authMiddleware, async (req, res) => {
       console.log('تم تهيئة مصفوفة المواعيد كمصفوفة فارغة');
     }
 
-    user.meetings.push({ title, date: parsedDate, startTime, endTime, reminded: false });  // جديد: أضف reminded false
+    user.meetings.push({ title, date: parsedDate, startTime, endTime, reminded: false });
     await user.save();
     console.log('تم إضافة الموعد:', user.meetings);
 
@@ -809,7 +827,7 @@ router.post('/profile/meetings', authMiddleware, async (req, res) => {
       date: meeting.date.toISOString().split('T')[0],
       startTime: meeting.startTime,
       endTime: meeting.endTime,
-      reminded: meeting.reminded  // جديد: أضف في الرد إذا لزم
+      reminded: meeting.reminded
     }));
 
     res.json({ message: 'تم إضافة الموعد بنجاح', meetings: formattedMeetings });
@@ -852,7 +870,7 @@ router.put('/profile/meetings/:meetingId', authMiddleware, async (req, res) => {
     meeting.date = parsedDate;
     meeting.startTime = startTime;
     meeting.endTime = endTime;
-    meeting.reminded = false;  // جديد: إعادة تعيين reminded إلى false عند التحديث
+    meeting.reminded = false;
 
     await user.save();
     console.log('تم تحديث الموعد:', user.meetings);
@@ -863,7 +881,7 @@ router.put('/profile/meetings/:meetingId', authMiddleware, async (req, res) => {
       date: meeting.date.toISOString().split('T')[0],
       startTime: meeting.startTime,
       endTime: meeting.endTime,
-      reminded: meeting.reminded  // جديد
+      reminded: meeting.reminded
     }));
 
     res.json({ message: 'تم تحديث الموعد بنجاح', meetings: formattedMeetings });
@@ -906,7 +924,7 @@ router.delete('/profile/meetings/:meetingId', authMiddleware, async (req, res) =
       date: meeting.date.toISOString().split('T')[0],
       startTime: meeting.startTime,
       endTime: meeting.endTime,
-      reminded: meeting.reminded  // جديد
+      reminded: meeting.reminded
     }));
 
     res.json({ message: 'تم حذف الموعد بنجاح', meetings: formattedMeetings });
@@ -997,6 +1015,162 @@ router.post('/profile/meetings/:meetingId/remind', authMiddleware, async (req, r
     res.json({ message: 'تم إرسال التذكير اليدوي بنجاح', meetings: formattedMeetings });
   } catch (error) {
     console.error('خطأ في إرسال التذكير اليدوي:', error);
+    res.status(500).json({ message: 'خطأ في الخادم', error: error.message });
+  }
+});
+
+// Send message from admin to user
+router.post('/admin/send-message', authMiddleware, adminMiddleware, async (req, res) => {
+  try {
+    const { userId, content, displayDays } = req.body;
+    if (!userId || !content || !displayDays) {
+      return res.status(400).json({ message: 'معرف المستخدم، الرسالة، وعدد الأيام للعرض مطلوبة' });
+    }
+    if (!mongoose.Types.ObjectId.isValid(userId)) {
+      return res.status(400).json({ message: 'معرف المستخدم غير صالح' });
+    }
+    if (!validator.isLength(content, { min: 1, max: 1000 })) {
+      return res.status(400).json({ message: 'الرسالة يجب أن تكون بين 1 و1000 حرف' });
+    }
+    if (!Number.isInteger(displayDays) || displayDays < 1 || displayDays > 30) {
+      return res.status(400).json({ message: 'عدد الأيام يجب أن يكون عددًا صحيحًا بين 1 و30' });
+    }
+
+    // Find JoinRequest by userId
+    const joinRequest = await JoinRequest.findById(userId);
+    if (!joinRequest) {
+      return res.status(404).json({ message: 'طلب الانضمام غير موجود' });
+    }
+
+    // Find user by email from JoinRequest
+    const targetUser = await User.findOne({ email: joinRequest.email });
+    if (!targetUser) {
+      return res.status(404).json({ message: 'المستخدم غير موجود' });
+    }
+
+    if (!Array.isArray(targetUser.messages)) {
+      targetUser.messages = [];
+    }
+
+    // Check for active (non-expired) messages
+    const currentDate = new Date();
+    const activeMessages = targetUser.messages.filter(message => message.displayUntil > currentDate);
+    if (activeMessages.length > 0) {
+      return res.status(400).json({ 
+        message: 'يوجد رسالة نشطة بالفعل، يرجى تعديلها أو حذفها أولاً',
+        activeMessage: {
+          _id: activeMessages[0]._id,
+          content: activeMessages[0].content,
+          displayUntil: activeMessages[0].displayUntil
+        }
+      });
+    }
+
+    // Calculate displayUntil date
+    const displayUntil = new Date();
+    displayUntil.setDate(displayUntil.getDate() + displayDays);
+
+    targetUser.messages.push({ content, displayUntil });
+    await targetUser.save();
+
+    console.log('تم إرسال الرسالة إلى المستخدم:', { userId, email: joinRequest.email, content, displayUntil });
+
+    res.json({ message: 'تم إرسال الرسالة بنجاح', displayUntil });
+  } catch (error) {
+    console.error('خطأ في إرسال الرسالة:', error);
+    res.status(500).json({ message: 'خطأ في الخادم', error: error.message });
+  }
+});
+
+// Edit an existing message
+router.put('/admin/edit-message', authMiddleware, adminMiddleware, async (req, res) => {
+  try {
+    const { userId, messageId, content, displayDays } = req.body;
+    if (!userId || !messageId || !content || !displayDays) {
+      return res.status(400).json({ message: 'معرف المستخدم، معرف الرسالة، الرسالة، وعدد الأيام للعرض مطلوبة' });
+    }
+    if (!mongoose.Types.ObjectId.isValid(userId) || !mongoose.Types.ObjectId.isValid(messageId)) {
+      return res.status(400).json({ message: 'معرف المستخدم أو معرف الرسالة غير صالح' });
+    }
+    if (!validator.isLength(content, { min: 1, max: 1000 })) {
+      return res.status(400).json({ message: 'الرسالة يجب أن تكون بين 1 و1000 حرف' });
+    }
+    if (!Number.isInteger(displayDays) || displayDays < 1 || displayDays > 30) {
+      return res.status(400).json({ message: 'عدد الأيام يجب أن يكون عددًا صحيحًا بين 1 و30' });
+    }
+
+    // Find JoinRequest by userId
+    const joinRequest = await JoinRequest.findById(userId);
+    if (!joinRequest) {
+      return res.status(404).json({ message: 'طلب الانضمام غير موجود' });
+    }
+
+    // Find user by email from JoinRequest
+    const targetUser = await User.findOne({ email: joinRequest.email });
+    if (!targetUser) {
+      return res.status(404).json({ message: 'المستخدم غير موجود' });
+    }
+
+    // Find the message
+    const message = targetUser.messages.id(messageId);
+    if (!message) {
+      return res.status(404).json({ message: 'الرسالة غير موجودة' });
+    }
+
+    // Update message content and displayUntil
+    const displayUntil = new Date();
+    displayUntil.setDate(displayUntil.getDate() + displayDays);
+    message.content = content;
+    message.displayUntil = displayUntil;
+
+    await targetUser.save();
+
+    console.log('تم تعديل الرسالة:', { userId, messageId, email: joinRequest.email, content, displayUntil });
+
+    res.json({ message: 'تم تعديل الرسالة بنجاح', displayUntil });
+  } catch (error) {
+    console.error('خطأ في تعديل الرسالة:', error);
+    res.status(500).json({ message: 'خطأ في الخادم', error: error.message });
+  }
+});
+
+// Delete a message
+router.delete('/admin/delete-message', authMiddleware, adminMiddleware, async (req, res) => {
+  try {
+    const { userId, messageId } = req.body;
+    if (!userId || !messageId) {
+      return res.status(400).json({ message: 'معرف المستخدم ومعرف الرسالة مطلوبان' });
+    }
+    if (!mongoose.Types.ObjectId.isValid(userId) || !mongoose.Types.ObjectId.isValid(messageId)) {
+      return res.status(400).json({ message: 'معرف المستخدم أو معرف الرسالة غير صالح' });
+    }
+
+    // Find JoinRequest by userId
+    const joinRequest = await JoinRequest.findById(userId);
+    if (!joinRequest) {
+      return res.status(404).json({ message: 'طلب الانضمام غير موجود' });
+    }
+
+    // Find user by email from JoinRequest
+    const targetUser = await User.findOne({ email: joinRequest.email });
+    if (!targetUser) {
+      return res.status(404).json({ message: 'المستخدم غير موجود' });
+    }
+
+    // Find and remove the message
+    const message = targetUser.messages.id(messageId);
+    if (!message) {
+      return res.status(404).json({ message: 'الرسالة غير موجودة' });
+    }
+
+    targetUser.messages.pull(messageId);
+    await targetUser.save();
+
+    console.log('تم حذف الرسالة:', { userId, messageId, email: joinRequest.email });
+
+    res.json({ message: 'تم حذف الرسالة بنجاح' });
+  } catch (error) {
+    console.error('خطأ في حذف الرسالة:', error);
     res.status(500).json({ message: 'خطأ في الخادم', error: error.message });
   }
 });
