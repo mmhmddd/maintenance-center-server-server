@@ -3,7 +3,7 @@ import jwt from 'jsonwebtoken';
 import User from '../models/User.js';
 import JoinRequest from '../models/JoinRequest.js';
 import Notification from '../models/Notification.js';
-import LowLectureReport from '../models/LowLectureReport.js'; // New model
+import LowLectureReport from '../models/LowLectureReport.js';
 import validator from 'validator';
 import mongoose from 'mongoose';
 import cron from 'node-cron';
@@ -14,26 +14,26 @@ const router = express.Router();
 const authMiddleware = (req, res, next) => {
   const token = req.header('Authorization')?.replace('Bearer ', '');
   if (!token) {
-    console.error('لم يتم توفير رمز التوثيق');
-    return res.status(401).json({ message: 'الوصول مرفوض، يرجى تسجيل الدخول' });
+    console.error('No authentication token provided');
+    return res.status(401).json({ message: 'Access denied, please log in' });
   }
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     req.userId = decoded.userId;
     req.userRole = decoded.role;
-    console.log('تم التحقق من التوكن:', { userId: req.userId, role: req.userRole });
+    console.log('Token verified:', { userId: req.userId, role: req.userRole });
     next();
   } catch (error) {
-    console.error('خطأ في التحقق من الرمز:', error.message);
-    res.status(401).json({ message: 'رمز غير صالح' });
+    console.error('Token verification error:', error.message);
+    return res.status(401).json({ message: 'Invalid token' });
   }
 };
 
 // Admin middleware
 const adminMiddleware = (req, res, next) => {
   if (req.userRole !== 'admin') {
-    console.error('محاولة وصول غير مصرح بها:', req.userId);
-    return res.status(403).json({ message: 'يجب أن تكون مسؤولاً للوصول إلى هذا الطريق' });
+    console.error('Unauthorized access attempt:', req.userId);
+    return res.status(403).json({ message: 'You must be an admin to access this route' });
   }
   next();
 };
@@ -49,27 +49,27 @@ router.post('/', authMiddleware, async (req, res) => {
     if (!link || !name || !subject || !studentEmail) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(400).json({ message: 'رابط المحاضرة، الاسم، المادة، وبريد الطالب مطلوبة' });
+      return res.status(400).json({ message: 'Lecture link, name, subject, and student email are required' });
     }
-    if (!validator.isURL(link)) {
+    if (!validator.isURL(link, { require_protocol: true })) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(400).json({ message: 'رابط المحاضرة غير صالح' });
+      return res.status(400).json({ message: 'Invalid lecture link' });
     }
     if (!validator.isLength(name, { min: 1, max: 100 })) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(400).json({ message: 'اسم المحاضرة يجب أن يكون بين 1 و100 حرف' });
+      return res.status(400).json({ message: 'Lecture name must be between 1 and 100 characters' });
     }
     if (!validator.isLength(subject, { min: 1, max: 100 })) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(400).json({ message: 'اسم المادة يجب أن يكون بين 1 و100 حرف' });
+      return res.status(400).json({ message: 'Subject name must be between 1 and 100 characters' });
     }
     if (!validator.isEmail(studentEmail)) {
       await session.abortTransaction();
       session.endSession();
-      return res.status(400).json({ message: 'بريد الطالب غير صالح' });
+      return res.status(400).json({ message: 'Invalid student email' });
     }
 
     const normalizedStudentEmail = studentEmail.toLowerCase().trim();
@@ -77,43 +77,36 @@ router.post('/', authMiddleware, async (req, res) => {
     if (!user) {
       await session.abortTransaction();
       session.endSession();
-      console.error('المستخدم غير موجود:', req.userId);
-      return res.status(404).json({ message: 'المستخدم غير موجود' });
+      console.error('User not found:', req.userId);
+      return res.status(404).json({ message: 'User not found' });
     }
 
-    // Log student validation
-    console.log('التحقق من وجود الطالب:', {
-      userId: req.userId,
-      studentEmail: normalizedStudentEmail,
-      students: user.students.map(s => s.email)
-    });
-
     // Check if student exists (case-insensitive)
-    if (!Array.isArray(user.students) || !user.students.some(s => s.email.toLowerCase() === normalizedStudentEmail)) {
+    if (!Array.isArray(user.students) || !user.students.some(s => s.email.toLowerCase().trim() === normalizedStudentEmail)) {
       await session.abortTransaction();
       session.endSession();
-      console.error('الطالب غير موجود في قائمة الطلاب:', normalizedStudentEmail);
-      return res.status(400).json({ message: 'الطالب غير موجود' });
+      console.error('Student not found in user’s students list:', normalizedStudentEmail);
+      return res.status(400).json({ message: 'Student not found' });
     }
 
     const joinRequest = await JoinRequest.findOne({ email: user.email.toLowerCase().trim() }).session(session);
     if (!joinRequest) {
       await session.abortTransaction();
       session.endSession();
-      console.error('طلب الانضمام غير موجود للمستخدم:', user.email);
-      return res.status(404).json({ message: 'طلب الانضمام غير موجود' });
+      console.error('Join request not found for user:', user.email);
+      return res.status(404).json({ message: 'Join request not found' });
     }
 
     // Initialize lectures array if undefined
     if (!Array.isArray(user.lectures)) user.lectures = [];
 
     // Create lecture
-    const lecture = { 
-      link, 
-      name, 
-      subject, 
-      studentEmail: normalizedStudentEmail, 
-      createdAt: new Date() 
+    const lecture = {
+      link,
+      name,
+      subject,
+      studentEmail: normalizedStudentEmail,
+      createdAt: new Date()
     };
     user.lectures.push(lecture);
     user.lectureCount = (user.lectureCount || 0) + 1;
@@ -133,7 +126,7 @@ router.post('/', authMiddleware, async (req, res) => {
     // Create notification
     const notification = new Notification({
       userId: req.userId,
-      message: `تمت إضافة محاضرة جديدة بواسطة ${user.email}: ${name} (${subject}) - ${link}`,
+      message: `New lecture added by ${user.email}: ${name} (${subject}) - ${link}`,
       type: 'lecture_added',
       lectureDetails: { link, name, subject, studentEmail: normalizedStudentEmail }
     });
@@ -145,7 +138,7 @@ router.post('/', authMiddleware, async (req, res) => {
     await session.commitTransaction();
     session.endSession();
 
-    console.log('تم إضافة المحاضرة بنجاح:', {
+    console.log('Lecture added successfully:', {
       userId: req.userId,
       link,
       name,
@@ -157,16 +150,16 @@ router.post('/', authMiddleware, async (req, res) => {
 
     res.json({
       success: true,
-      message: 'تم إضافة المحاضرة بنجاح',
+      message: 'Lecture added successfully',
       lecture,
       lectureCount: user.lectureCount,
       volunteerHours: joinRequest.volunteerHours
     });
   } catch (error) {
-    console.error('خطأ في إضافة المحاضرة:', error.message);
+    console.error('Error adding lecture:', error.message);
     await session.abortTransaction();
     session.endSession();
-    res.status(500).json({ success: false, message: 'خطأ في الخادم', error: error.message });
+    res.status(500).json({ success: false, message: 'Server error', error: error.message });
   }
 });
 
@@ -179,10 +172,10 @@ router.delete('/:lectureId', authMiddleware, adminMiddleware, async (req, res) =
     if (!mongoose.Types.ObjectId.isValid(lectureId)) {
       await session.abortTransaction();
       session.endSession();
-      console.error('معرف المحاضرة غير صالح:', lectureId);
-      return res.status(400).json({ 
-        success: false, 
-        message: 'معرف المحاضرة غير صالح' 
+      console.error('Invalid lecture ID:', lectureId);
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid lecture ID'
       });
     }
 
@@ -190,24 +183,24 @@ router.delete('/:lectureId', authMiddleware, adminMiddleware, async (req, res) =
     if (!user) {
       await session.abortTransaction();
       session.endSession();
-      console.error('المحاضرة غير موجودة:', lectureId);
-      return res.status(404).json({ message: 'المحاضرة غير موجودة' });
+      console.error('Lecture not found:', lectureId);
+      return res.status(404).json({ message: 'Lecture not found' });
     }
 
     const lecture = user.lectures.id(lectureId);
     if (!lecture) {
       await session.abortTransaction();
       session.endSession();
-      console.error('المحاضرة غير موجودة:', lectureId);
-      return res.status(404).json({ message: 'المحاضرة غير موجودة' });
+      console.error('Lecture not found:', lectureId);
+      return res.status(404).json({ message: 'Lecture not found' });
     }
 
     const joinRequest = await JoinRequest.findOne({ email: user.email.toLowerCase().trim() }).session(session);
     if (!joinRequest) {
       await session.abortTransaction();
       session.endSession();
-      console.error('طلب الانضمام غير موجود للمستخدم:', user.email);
-      return res.status(404).json({ message: 'طلب الانضمام غير موجود' });
+      console.error('Join request not found for user:', user.email);
+      return res.status(404).json({ message: 'Join request not found' });
     }
 
     user.lectures.pull(lectureId);
@@ -219,139 +212,187 @@ router.delete('/:lectureId', authMiddleware, adminMiddleware, async (req, res) =
     await session.commitTransaction();
     session.endSession();
 
-    console.log('تم حذف المحاضرة بنجاح:', { lectureId, userId: user._id, lectureCount: user.lectureCount });
-    res.json({ 
-      success: true, 
-      message: 'تم حذف المحاضرة بنجاح', 
+    console.log('Lecture deleted successfully:', { lectureId, userId: user._id, lectureCount: user.lectureCount });
+    res.json({
+      success: true,
+      message: 'Lecture deleted successfully',
       lectureCount: user.lectureCount,
       volunteerHours: joinRequest.volunteerHours
     });
   } catch (error) {
-    console.error('خطأ في حذف المحاضرة:', error.message);
+    console.error('Error deleting lecture:', error.message);
     await session.abortTransaction();
     session.endSession();
-    res.status(500).json({ success: false, message: 'خطأ في الخادم', error: error.message });
+    res.status(500).json({ success: false, message: 'Server error', error: error.message });
   }
 });
 
-// Get notifications
-router.get('/notifications', authMiddleware, async (req, res) => {
-  try {
-    const notifications = await Notification.find({ userId: req.userId })
-      .populate('userId', 'email')
-      .sort({ createdAt: -1 });
-
-    console.log('تم جلب الإشعارات للمستخدم:', { userId: req.userId, count: notifications.length });
-
-    res.json({
-      success: true,
-      message: 'تم جلب الإشعارات بنجاح',
-      notifications: notifications.map(notification => ({
-        _id: notification._id.toString(),
-        userId: {
-          _id: notification.userId._id.toString(),
-          email: notification.userId.email
-        },
-        message: notification.message,
-        type: notification.type,
-        createdAt: notification.createdAt.toISOString(),
-        read: notification.read,
-        lectureDetails: notification.lectureDetails
-      }))
-    });
-  } catch (error) {
-    console.error('خطأ في جلب الإشعارات:', error.message);
-    res.status(500).json({
-      success: false,
-      message: 'خطأ في جلب الإشعارات',
-      error: error.message
-    });
-  }
-});
-
-// Mark notifications as read
-router.post('/notifications/mark-read', authMiddleware, async (req, res) => {
-  try {
-    const result = await Notification.updateMany(
-      { userId: req.userId, read: false },
-      { $set: { read: true } }
-    );
-
-    const notifications = await Notification.find({ userId: req.userId })
-      .populate('userId', 'email')
-      .sort({ createdAt: -1 });
-
-    console.log('تم تحديد الإشعارات كمقروءة:', { userId: req.userId, modifiedCount: result.modifiedCount });
-
-    res.json({
-      success: true,
-      message: 'تم تحديد الإشعارات كمقروءة',
-      notifications: notifications.map(notification => ({
-        _id: notification._id.toString(),
-        userId: {
-          _id: notification.userId._id.toString(),
-          email: notification.userId.email
-        },
-        message: notification.message,
-        type: notification.type,
-        createdAt: notification.createdAt.toISOString(),
-        read: notification.read,
-        lectureDetails: notification.lectureDetails
-      }))
-    });
-  } catch (error) {
-    console.error('خطأ في تحديد الإشعارات كمقروءة:', error.message);
-    res.status(500).json({
-      success: false,
-      message: 'خطأ في تحديد الإشعارات كمقروءة',
-      error: error.message
-    });
-  }
-});
-
-// Delete a specific notification
-router.delete('/notifications/:id', authMiddleware, async (req, res) => {
-  try {
-    const notificationId = req.params.id;
-    if (!mongoose.Types.ObjectId.isValid(notificationId)) {
-      console.error('معرف الإشعار غير صالح:', notificationId);
-      return res.status(400).json({ success: false, message: 'معرف الإشعار غير صالح' });
-    }
-
-    const notification = await Notification.findOne({ _id: notificationId, userId: req.userId });
-    if (!notification) {
-      console.error('الإشعار غير موجود أو لا ينتمي إلى المستخدم:', { notificationId, userId: req.userId });
-      return res.status(404).json({ success: false, message: 'الإشعار غير موجود أو لا ينتمي إلى المستخدم' });
-    }
-
-    await Notification.deleteOne({ _id: notificationId });
-
-    console.log('تم حذف الإشعار بنجاح:', { notificationId, userId: req.userId });
-
-    res.json({ success: true, message: 'تم حذف الإشعار بنجاح' });
-  } catch (error) {
-    console.error('خطأ في حذف الإشعار:', error.message);
-    res.status(500).json({
-      success: false,
-      message: 'خطأ في الخادم',
-      error: error.message
-    });
-  }
-});
-
-// Function to check low lecture members
-async function checkLowLectureMembers(isCronJob = false) {
+// Delete low lecture member
+router.delete('/low-lecture-members/:id', authMiddleware, adminMiddleware, async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
   try {
-    const users = await User.find({ role: 'user' }).session(session);
-    console.log('📊 Found users with role "user":', users.length);
-    
-    const lowLectureMembers = [];
-    
-    // Calculate the previous week: Saturday to Friday
+    const { id } = req.params;
+
+    // Validate ObjectId
+    if (!mongoose.Types.ObjectId.isValid(id)) {
+      await session.abortTransaction();
+      session.endSession();
+      console.error('Invalid member ID:', id);
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid member ID'
+      });
+    }
+
+    // Calculate the previous week (Saturday to Friday) to align with GET endpoint
     const now = new Date();
-    const dayOfWeek = now.getDay(); // 0=Sun, 1=Mon, ..., 6=Sat
+    const dayOfWeek = now.getDay();
+    let daysToPreviousSaturday = (dayOfWeek + 1) % 7;
+    if (daysToPreviousSaturday === 0) daysToPreviousSaturday = 7;
+
+    const previousSaturday = new Date(now);
+    previousSaturday.setDate(now.getDate() - daysToPreviousSaturday);
+
+    const weekStart = new Date(previousSaturday);
+    weekStart.setDate(previousSaturday.getDate() - 7);
+    weekStart.setHours(0, 0, 0, 0);
+
+    const weekEnd = new Date(previousSaturday);
+    weekEnd.setDate(previousSaturday.getDate() - 1);
+    weekEnd.setHours(23, 59, 59, 999);
+
+    console.log('Attempting to find report for week:', { weekStart: weekStart.toISOString(), weekEnd: weekEnd.toISOString() });
+
+    // Find the report for the previous week
+    let report = await LowLectureReport.findOne({ weekStart }).session(session);
+
+    // If no report exists, generate one
+    if (!report) {
+      console.log('No report found for previous week, generating new report:', { weekStart: weekStart.toISOString() });
+      const result = await checkLowLectureMembers(false, session);
+      console.log('Generated report result:', {
+        success: result.success,
+        message: result.message,
+        memberCount: result.members.length,
+        members: result.members.map(m => ({ _id: m._id, email: m.email }))
+      });
+
+      // Check if a report was created by checkLowLectureMembers
+      report = await LowLectureReport.findOne({ weekStart }).session(session);
+      if (!report || report.members.length === 0) {
+        await session.abortTransaction();
+        session.endSession();
+        console.warn('No members with low lectures found for week:', { weekStart, weekEnd });
+        return res.status(404).json({
+          success: false,
+          message: 'No members with low lecture counts found for the specified week'
+        });
+      }
+    }
+
+    // Check if the member exists in the report
+    const initialLength = report.members.length;
+    const memberExists = report.members.some(member => member._id.toString() === id);
+    console.log('Checking if member exists in report:', { memberId: id, exists: memberExists });
+
+    report.members = report.members.filter(member => member._id.toString() !== id);
+
+    if (report.members.length === initialLength) {
+      await session.abortTransaction();
+      session.endSession();
+      console.error('Member not found in low lecture report:', { memberId: id });
+      return res.status(404).json({
+        success: false,
+        message: 'Member not found in low lecture report'
+      });
+    }
+
+    // Update membersWithLowLectures count
+    report.membersWithLowLectures = report.members.length;
+
+    // Save the updated report
+    await report.save({ session });
+
+    await session.commitTransaction();
+    session.endSession();
+
+    console.log(`Member ${id} successfully removed from LowLectureReport for week starting ${weekStart.toISOString()}`);
+    return res.status(200).json({
+      success: true,
+      message: 'Member successfully removed from this week’s low lecture report'
+    });
+  } catch (error) {
+    if (error.code === 11000 && error.keyPattern && error.keyPattern.weekStart) {
+      console.warn('Duplicate key error for weekStart, fetching existing report:', { weekStart: weekStart.toISOString() });
+      // Fetch existing report instead of creating a new one
+      const report = await LowLectureReport.findOne({ weekStart }).session(session);
+      if (!report || report.members.length === 0) {
+        await session.abortTransaction();
+        session.endSession();
+        console.warn('No members with low lectures found in existing report:', { weekStart, weekEnd });
+        return res.status(404).json({
+          success: false,
+          message: 'No members with low lecture counts found for the specified week'
+        });
+      }
+
+      // Check if the member exists in the report
+      const initialLength = report.members.length;
+      const memberExists = report.members.some(member => member._id.toString() === id);
+      console.log('Checking if member exists in report:', { memberId: id, exists: memberExists });
+
+      report.members = report.members.filter(member => member._id.toString() !== id);
+
+      if (report.members.length === initialLength) {
+        await session.abortTransaction();
+        session.endSession();
+        console.error('Member not found in low lecture report:', { memberId: id });
+        return res.status(404).json({
+          success: false,
+          message: 'Member not found in low lecture report'
+        });
+      }
+
+      // Update membersWithLowLectures count
+      report.membersWithLowLectures = report.members.length;
+
+      // Save the updated report
+      await report.save({ session });
+
+      await session.commitTransaction();
+      session.endSession();
+
+      console.log(`Member ${id} successfully removed from LowLectureReport for week starting ${weekStart.toISOString()}`);
+      return res.status(200).json({
+        success: true,
+        message: 'Member successfully removed from this week’s low lecture report'
+      });
+    }
+
+    console.error('Error removing member from LowLectureReport:', {
+      memberId: req.params.id,
+      error: error.message,
+      stack: error.stack
+    });
+    await session.abortTransaction();
+    session.endSession();
+    return res.status(500).json({
+      success: false,
+      message: 'Internal server error. Please try again later.',
+      error: error.message
+    });
+  }
+});
+
+// Get low lecture members
+router.get('/low-lecture-members', authMiddleware, adminMiddleware, async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+  try {
+    // Calculate the previous week (Saturday to Friday)
+    const now = new Date();
+    const dayOfWeek = now.getDay();
     let daysToPreviousSaturday = (dayOfWeek + 1) % 7;
     if (daysToPreviousSaturday === 0) daysToPreviousSaturday = 7;
 
@@ -359,33 +400,132 @@ async function checkLowLectureMembers(isCronJob = false) {
     previousSaturday.setDate(now.getDate() - daysToPreviousSaturday);
     
     const weekStart = new Date(previousSaturday);
-    weekStart.setDate(previousSaturday.getDate() - 7); // Previous Saturday
+    weekStart.setDate(previousSaturday.getDate() - 7);
+    weekStart.setHours(0, 0, 0, 0);
+
+    const weekEnd = new Date(previousSaturday);
+    weekEnd.setDate(previousSaturday.getDate() - 1);
+    weekEnd.setHours(23, 59, 59, 999);
+
+    console.log('Fetching report for week:', { weekStart: weekStart.toISOString(), weekEnd: weekEnd.toISOString() });
+
+    // Find the latest report for the previous week
+    let report = await LowLectureReport.findOne({ weekStart })
+      .sort({ createdAt: -1 })
+      .session(session);
+
+    if (!report) {
+      console.log('No report found, generating new report:', { weekStart: weekStart.toISOString() });
+      const result = await checkLowLectureMembers(false, session);
+      console.log('Generated report result:', {
+        success: result.success,
+        message: result.message,
+        memberCount: result.members.length,
+        members: result.members.map(m => ({ _id: m._id, email: m.email }))
+      });
+
+      // Check if a report was created
+      report = await LowLectureReport.findOne({ weekStart }).session(session);
+      if (!report) {
+        await session.commitTransaction();
+        session.endSession();
+        return res.json({
+          success: true,
+          message: 'All members meet the minimum weekly lecture requirements',
+          members: [],
+          debug: {
+            totalUsersProcessed: result.debug.totalUsersProcessed,
+            weekStart: weekStart.toISOString(),
+            weekEnd: weekEnd.toISOString(),
+            membersWithLowLectures: 0
+          }
+        });
+      }
+    }
+
+    await session.commitTransaction();
+    session.endSession();
+    console.log('Returning low lecture report:', { weekStart: weekStart.toISOString(), memberCount: report.members.length });
+
+    return res.json({
+      success: true,
+      message: report.members.length > 0 
+        ? `Found ${report.members.length} members with low lecture counts`
+        : 'All members meet the minimum weekly lecture requirements',
+      members: report.members,
+      debug: {
+        totalUsersProcessed: report.totalUsersProcessed,
+        weekStart: report.weekStart.toISOString(),
+        weekEnd: report.weekEnd.toISOString(),
+        membersWithLowLectures: report.membersWithLowLectures
+      }
+    });
+  } catch (error) {
+    console.error('Error in low-lecture-members:', error.message, error.stack);
+    await session.abortTransaction();
+    session.endSession();
+    res.status(500).json({
+      success: false,
+      message: 'Server error',
+      error: error.message
+    });
+  }
+});
+
+// Function to check low lecture members
+async function checkLowLectureMembers(isCronJob = false, session = null) {
+  const localSession = session || await mongoose.startSession();
+  if (!session) localSession.startTransaction();
+  try {
+    const users = await User.find({ role: 'user' }).session(localSession);
+    console.log('📊 Found users with role "user":', users.length);
+    
+    const lowLectureMembers = [];
+    
+    // Calculate the previous week: Saturday to Friday
+    const now = new Date();
+    const dayOfWeek = now.getDay();
+    let daysToPreviousSaturday = (dayOfWeek + 1) % 7;
+    if (daysToPreviousSaturday === 0) daysToPreviousSaturday = 7;
+
+    const previousSaturday = new Date(now);
+    previousSaturday.setDate(now.getDate() - daysToPreviousSaturday);
+    
+    const weekStart = new Date(previousSaturday);
+    weekStart.setDate(previousSaturday.getDate() - 7);
     weekStart.setHours(0, 0, 0, 0);
     
     const weekEnd = new Date(previousSaturday);
-    weekEnd.setDate(previousSaturday.getDate() - 1); // Previous Friday
+    weekEnd.setDate(previousSaturday.getDate() - 1);
     weekEnd.setHours(23, 59, 59, 999);
 
     console.log('📅 Checking lectures from:', weekStart.toISOString(), 'to', weekEnd.toISOString());
 
     for (const user of users) {
-      console.log('👤 Processing user:', { userId: user._id, email: user.email });
+      console.log('👤 Processing user:', { userId: user._id.toString(), email: user.email });
 
       // Check if user has approved join request
-      const joinRequest = await JoinRequest.findOne({ email: user.email.toLowerCase().trim() }).session(session);
-      if (!joinRequest || joinRequest.status !== 'Approved') {
-        console.log('⏩ Skipping user - No approved join request:', { userId: user._id, email: user.email });
+      const joinRequest = await JoinRequest.findOne({ 
+        email: user.email.toLowerCase().trim(), 
+        status: 'Approved' 
+      }).session(localSession);
+      if (!joinRequest) {
+        console.log('⏩ Skipping user - No approved join request:', { userId: user._id.toString(), email: user.email });
+        if (isCronJob && user.lowLectureWeekCount > 0) {
+          user.lowLectureWeekCount = 0;
+          user.lastLowLectureWeek = null;
+          await user.save({ session: localSession });
+        }
         continue;
       }
 
       // Ensure students array exists and is valid
       if (!Array.isArray(user.students) || user.students.length === 0) {
-        console.log('⏩ Skipping user - No students:', { userId: user._id, email: user.email });
-        // Reset counter if no students
+        console.log('⏩ Skipping user - No students:', { userId: user._id.toString(), email: user.email });
         if (isCronJob && user.lowLectureWeekCount > 0) {
           user.lowLectureWeekCount = 0;
           user.lastLowLectureWeek = null;
-          await user.save({ session });
+          await user.save({ session: localSession });
         }
         continue;
       }
@@ -394,9 +534,8 @@ async function checkLowLectureMembers(isCronJob = false) {
       const userUnderTargetStudents = [];
 
       // Process each student
-      for (let studentIndex = 0; studentIndex < user.students.length; studentIndex++) {
-        const student = user.students[studentIndex];
-        console.log(`🎓 Processing student ${studentIndex + 1}/${user.students.length}:`, {
+      for (const student of user.students) {
+        console.log(`🎓 Processing student:`, {
           studentEmail: student.email,
           studentName: student.name,
           hasSubjects: Array.isArray(student.subjects)
@@ -411,39 +550,22 @@ async function checkLowLectureMembers(isCronJob = false) {
         const studentUnderTargetSubjects = [];
 
         // Process each subject for this student
-        for (let subjectIndex = 0; subjectIndex < student.subjects.length; subjectIndex++) {
-          const subject = student.subjects[subjectIndex];
-          console.log(`📚 Processing subject ${subjectIndex + 1}/${student.subjects.length}:`, {
+        for (const subject of student.subjects) {
+          console.log(`📚 Processing subject:`, {
             subjectName: subject.name,
             minLectures: subject.minLectures,
             studentEmail: student.email
           });
 
           // Ensure lectures array exists
-          if (!Array.isArray(user.lectures)) {
-            user.lectures = [];
-          }
+          if (!Array.isArray(user.lectures)) user.lectures = [];
 
           // Count lectures for this student and subject in the last week
           const lectureCount = user.lectures.filter(lecture => {
             const matchesTimeFrame = lecture.createdAt >= weekStart && lecture.createdAt <= weekEnd;
-            const matchesStudent = lecture.studentEmail && 
-              lecture.studentEmail.toLowerCase().trim() === student.email.toLowerCase().trim();
+            const matchesStudent = lecture.studentEmail?.toLowerCase().trim() === student.email.toLowerCase().trim();
             const matchesSubject = lecture.subject === subject.name;
-            
-            const matches = matchesTimeFrame && matchesStudent && matchesSubject;
-            
-            if (matches) {
-              console.log('✅ Matching lecture found:', {
-                lectureId: lecture._id,
-                lectureName: lecture.name,
-                lectureSubject: lecture.subject,
-                lectureStudentEmail: lecture.studentEmail,
-                lectureDate: lecture.createdAt
-              });
-            }
-            
-            return matches;
+            return matchesTimeFrame && matchesStudent && matchesSubject;
           }).length;
 
           console.log(`📊 Lecture count for ${student.name} in ${subject.name}:`, {
@@ -467,11 +589,11 @@ async function checkLowLectureMembers(isCronJob = false) {
                 type: 'low_lecture_count_per_subject',
                 'lectureDetails.subject': subject.name,
                 'lectureDetails.studentEmail': student.email.toLowerCase().trim()
-              }).session(session);
+              }).session(localSession);
 
               if (!notificationExists) {
                 console.log('🔔 Creating notification for low lecture count:', {
-                  userId: user._id,
+                  userId: user._id.toString(),
                   studentEmail: student.email,
                   subject: subject.name,
                   delivered: lectureCount,
@@ -480,7 +602,7 @@ async function checkLowLectureMembers(isCronJob = false) {
                 
                 const notification = new Notification({
                   userId: user._id,
-                  message: `عدد المحاضرات الأسبوعية للطالب ${student.name} في مادة ${subject.name} أقل من الحد الأدنى (${lectureCount}/${subject.minLectures})`,
+                  message: `Weekly lectures for student ${student.name} in subject ${subject.name} are below the minimum (${lectureCount}/${subject.minLectures})`,
                   type: 'low_lecture_count_per_subject',
                   lectureDetails: {
                     studentEmail: student.email.toLowerCase().trim(),
@@ -489,18 +611,16 @@ async function checkLowLectureMembers(isCronJob = false) {
                     currentLectures: lectureCount
                   }
                 });
-                await notification.save({ session });
+                await notification.save({ session: localSession });
               }
             }
           }
         }
 
-        // If this student has subjects under target, add to user's under-target students
+        // If this student has subjects under target
         if (studentUnderTargetSubjects.length > 0) {
-          console.log(`Student ${student.name} has ${studentUnderTargetSubjects.length} subjects under target`);
-          
           userUnderTargetStudents.push({
-            studentName: student.name || 'اسم غير متوفر',
+            studentName: student.name || 'Name not available',
             studentEmail: student.email.toLowerCase().trim(),
             academicLevel: student.academicLevel || 'غير محدد',
             underTargetSubjects: studentUnderTargetSubjects
@@ -514,9 +634,9 @@ async function checkLowLectureMembers(isCronJob = false) {
         
         // Increment counter only in cron job and if not already counted for this week
         if (isCronJob && (!user.lastLowLectureWeek || user.lastLowLectureWeek < weekStart)) {
-          user.lowLectureWeekCount = (user.lowLectureWeekCount || 0) + 1;
+          user.lowLectureWeekCount = (user.lectureWeekCount || 0) + 1;
           user.lastLowLectureWeek = weekStart;
-          await user.save({ session });
+          await user.save({ session: localSession });
           console.log(`Incremented lowLectureWeekCount for ${user.email}: ${user.lowLectureWeekCount}`);
         }
         
@@ -537,55 +657,61 @@ async function checkLowLectureMembers(isCronJob = false) {
         });
       } else {
         console.log(`User ${user.email} meets all requirements`);
-        // Reset counter if user meets requirements (only in cron job)
         if (isCronJob && user.lowLectureWeekCount > 0) {
           user.lowLectureWeekCount = 0;
           user.lastLowLectureWeek = null;
-          await user.save({ session });
+          await user.save({ session: localSession });
           console.log(`Reset lowLectureWeekCount for ${user.email} to 0`);
         }
       }
     }
 
-    // Save report (only in cron job)
-    let report = null;
-    if (isCronJob) {
-      report = new LowLectureReport({
-        weekStart,
-        weekEnd,
-        members: lowLectureMembers,
-        totalUsersProcessed: users.length,
-        membersWithLowLectures: lowLectureMembers.length,
-        createdAt: new Date()
-      });
-      await report.save({ session });
+    // Save report (always, to ensure DELETE can access it)
+    const report = new LowLectureReport({
+      weekStart,
+      weekEnd,
+      members: lowLectureMembers,
+      totalUsersProcessed: users.length,
+      membersWithLowLectures: lowLectureMembers.length,
+      createdAt: new Date()
+    });
+    try {
+      await report.save({ session: localSession });
       console.log('Saved low lecture report:', { weekStart: weekStart.toISOString(), members: lowLectureMembers.length });
+    } catch (error) {
+      if (error.code === 11000 && error.keyPattern && error.keyPattern.weekStart) {
+        console.warn('Duplicate key error in checkLowLectureMembers, updating existing report:', { weekStart: weekStart.toISOString() });
+        await LowLectureReport.updateOne(
+          { weekStart },
+          {
+            $set: {
+              weekEnd,
+              members: lowLectureMembers,
+              totalUsersProcessed: users.length,
+              membersWithLowLectures: lowLectureMembers.length,
+              createdAt: new Date()
+            }
+          },
+          { session: localSession }
+        );
+        console.log('Updated existing low lecture report:', { weekStart: weekStart.toISOString(), members: lowLectureMembers.length });
+      } else {
+        throw error;
+      }
     }
 
-    await session.commitTransaction();
-    session.endSession();
+    if (!session) {
+      await localSession.commitTransaction();
+      localSession.endSession();
+    }
 
     console.log(`Final results: ${lowLectureMembers.length} members with low lecture counts`);
     
-    // Debug: Log summary of results
-    if (lowLectureMembers.length > 0) {
-      console.log('Summary of low lecture members:', 
-        lowLectureMembers.map(member => ({
-          name: member.name,
-          email: member.email,
-          lowLectureWeekCount: member.lowLectureWeekCount,
-          studentsCount: member.underTargetStudents.length,
-          totalSubjects: member.underTargetStudents.reduce((sum, student) => 
-            sum + student.underTargetSubjects.length, 0)
-        }))
-      );
-    }
-
     return {
       success: true,
       message: lowLectureMembers.length > 0 
-        ? `تم العثور على ${lowLectureMembers.length} عضو لديهم محاضرات أقل من الحد الأدنى` 
-        : 'جميع الأعضاء يحققون الحد الأدنى من المحاضرات الأسبوعية',
+        ? `Found ${lowLectureMembers.length} members with low lecture counts`
+        : 'All members meet the minimum weekly lecture requirements',
       members: lowLectureMembers,
       debug: {
         totalUsersProcessed: users.length,
@@ -596,57 +722,116 @@ async function checkLowLectureMembers(isCronJob = false) {
     };
   } catch (error) {
     console.error('Error in checkLowLectureMembers:', error.message, error.stack);
-    await session.abortTransaction();
-    session.endSession();
+    if (!session) {
+      await localSession.abortTransaction();
+      localSession.endSession();
+    }
     throw error;
   }
 }
 
-// GET /low-lecture-members endpoint
-router.get('/low-lecture-members', authMiddleware, adminMiddleware, async (req, res) => {
+// Get notifications
+router.get('/notifications', authMiddleware, async (req, res) => {
   try {
-    // Calculate the previous week
-    const now = new Date();
-    const dayOfWeek = now.getDay();
-    let daysToPreviousSaturday = (dayOfWeek + 1) % 7;
-    if (daysToPreviousSaturday === 0) daysToPreviousSaturday = 7;
+    const notifications = await Notification.find({ userId: req.userId })
+      .populate('userId', 'email')
+      .sort({ createdAt: -1 })
+      .lean();
 
-    const previousSaturday = new Date(now);
-    previousSaturday.setDate(now.getDate() - daysToPreviousSaturday);
-    
-    const weekStart = new Date(previousSaturday);
-    weekStart.setDate(previousSaturday.getDate() - 7);
-    weekStart.setHours(0, 0, 0, 0);
+    console.log('Notifications fetched for user:', { userId: req.userId, count: notifications.length });
 
-    // Find the latest report for the previous week
-    const report = await LowLectureReport.findOne({ weekStart })
-      .sort({ createdAt: -1 });
-
-    if (report) {
-      console.log('Returning cached low lecture report:', { weekStart: weekStart.toISOString() });
-      res.json({
-        success: true,
-        message: report.members.length > 0 
-          ? `تم العثور على ${report.members.length} عضو لديهم محاضرات أقل من الحد الأدنى` 
-          : 'جميع الأعضاء يحققون الحد الأدنى من المحاضرات الأسبوعية',
-        members: report.members,
-        debug: {
-          totalUsersProcessed: report.totalUsersProcessed,
-          weekStart: report.weekStart.toISOString(),
-          weekEnd: report.weekEnd.toISOString(),
-          membersWithLowLectures: report.membersWithLowLectures
-        }
-      });
-    } else {
-      // If no report exists, run the analysis without incrementing counters
-      const result = await checkLowLectureMembers(false);
-      res.json(result);
-    }
+    res.json({
+      success: true,
+      message: 'Notifications fetched successfully',
+      notifications: notifications.map(notification => ({
+        _id: notification._id.toString(),
+        userId: {
+          _id: notification.userId._id.toString(),
+          email: notification.userId.email
+        },
+        message: notification.message,
+        type: notification.type,
+        createdAt: notification.createdAt.toISOString(),
+        read: notification.read,
+        lectureDetails: notification.lectureDetails
+      }))
+    });
   } catch (error) {
-    console.error('Error in low-lecture-members:', error.message, error.stack);
+    console.error('Error fetching notifications:', error.message);
     res.status(500).json({
       success: false,
-      message: 'خطأ في الخادم',
+      message: 'Error fetching notifications',
+      error: error.message
+    });
+  }
+});
+
+// Mark notifications as read
+router.post('/notifications/mark-read', authMiddleware, async (req, res) => {
+  try {
+    const result = await Notification.updateMany(
+      { userId: req.userId, read: false },
+      { $set: { read: true } }
+    );
+
+    const notifications = await Notification.find({ userId: req.userId })
+      .populate('userId', 'email')
+      .sort({ createdAt: -1 })
+      .lean();
+
+    console.log('Notifications marked as read:', { userId: req.userId, modifiedCount: result.modifiedCount });
+
+    res.json({
+      success: true,
+      message: 'Notifications marked as read',
+      notifications: notifications.map(notification => ({
+        _id: notification._id.toString(),
+        userId: {
+          _id: notification.userId._id.toString(),
+          email: notification.userId.email
+        },
+        message: notification.message,
+        type: notification.type,
+        createdAt: notification.createdAt.toISOString(),
+        read: notification.read,
+        lectureDetails: notification.lectureDetails
+      }))
+    });
+  } catch (error) {
+    console.error('Error marking notifications as read:', error.message);
+    res.status(500).json({
+      success: false,
+      message: 'Error marking notifications as read',
+      error: error.message
+    });
+  }
+});
+
+// Delete a specific notification
+router.delete('/notifications/:id', authMiddleware, async (req, res) => {
+  try {
+    const notificationId = req.params.id;
+    if (!mongoose.Types.ObjectId.isValid(notificationId)) {
+      console.error('Invalid notification ID:', notificationId);
+      return res.status(400).json({ success: false, message: 'Invalid notification ID' });
+    }
+
+    const notification = await Notification.findOne({ _id: notificationId, userId: req.userId });
+    if (!notification) {
+      console.error('Notification not found or does not belong to user:', { notificationId, userId: req.userId });
+      return res.status(404).json({ success: false, message: 'Notification not found or does not belong to user' });
+    }
+
+    await Notification.deleteOne({ _id: notificationId });
+
+    console.log('Notification deleted successfully:', { notificationId, userId: req.userId });
+
+    res.json({ success: true, message: 'Notification deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting notification:', error.message);
+    res.status(500).json({
+      success: false,
+      message: 'Server error',
       error: error.message
     });
   }
@@ -654,12 +839,12 @@ router.get('/low-lecture-members', authMiddleware, adminMiddleware, async (req, 
 
 // Schedule the weekly check
 cron.schedule('0 0 * * 6', async () => {
-  console.log(' Starting weekly low lecture check...');
+  console.log('Starting weekly low lecture check...');
   try {
     await checkLowLectureMembers(true);
     console.log('Weekly check completed successfully.');
   } catch (error) {
-    console.error(' Error in weekly cron job:', error);
+    console.error('Error in weekly cron job:', error);
   }
 }, {
   timezone: 'Asia/Riyadh'
