@@ -1,4 +1,3 @@
-// api.js (Backend - Updated with enhanced logging and message management)
 import express from 'express';
 import { hash, compare } from 'bcryptjs';
 import jwt from 'jsonwebtoken';
@@ -25,7 +24,7 @@ cloudinary.config({
   secure: true
 });
 
-// Multer configuration for file uploads (memory storage for Cloudinary)
+// Multer configuration for file uploads
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -57,15 +56,17 @@ const upload = multer({
 const authMiddleware = (req, res, next) => {
   const token = req.header('Authorization')?.replace('Bearer ', '');
   if (!token) {
+    console.error('لم يتم توفير رمز التوثيق');
     return res.status(401).json({ message: 'الوصول مرفوض، يرجى تسجيل الدخول' });
   }
   try {
     const decoded = verify(token, process.env.JWT_SECRET);
     req.userId = decoded.userId;
     req.userRole = decoded.role;
+    console.log('تم التحقق من التوكن:', { userId: req.userId, role: req.userRole });
     next();
   } catch (error) {
-    console.error('خطأ في التحقق من الرمز:', error);
+    console.error('خطأ في التحقق من الرمز:', error.message);
     res.status(401).json({ message: 'رمز غير صالح' });
   }
 };
@@ -73,6 +74,7 @@ const authMiddleware = (req, res, next) => {
 // Admin middleware
 const adminMiddleware = (req, res, next) => {
   if (req.userRole !== 'admin') {
+    console.error('محاولة وصول غير مصرح بها:', req.userId);
     return res.status(403).json({ message: 'يجب أن تكون مسؤولاً للوصول إلى هذا الطريق' });
   }
   next();
@@ -80,44 +82,64 @@ const adminMiddleware = (req, res, next) => {
 
 // Submit a join request
 router.post('/join-requests', async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
   try {
     const { name, email, number, academicSpecialization, address, subjects } = req.body;
     if (!name || !email || !number || !academicSpecialization || !address) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(400).json({ message: 'الاسم، البريد الإلكتروني، الرقم، التخصص الجامعي، والعنوان مطلوبة' });
     }
     if (!validator.isEmail(email)) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(400).json({ message: 'البريد الإلكتروني غير صالح' });
     }
 
-    const existingRequest = await JoinRequest.findOne({ email });
+    const normalizedEmail = email.toLowerCase().trim();
+    const existingRequest = await JoinRequest.findOne({ email: normalizedEmail }).session(session);
     if (existingRequest) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(400).json({ message: 'البريد الإلكتروني مستخدم بالفعل' });
     }
 
-    const joinRequest = new JoinRequest({ name, email, number, academicSpecialization, address, subjects });
-    await joinRequest.save();
-    console.log('تم إنشاء طلب الانضمام:', joinRequest);
+    const joinRequest = new JoinRequest({ 
+      name, 
+      email: normalizedEmail, 
+      number, 
+      academicSpecialization, 
+      address, 
+      subjects: subjects || [] 
+    });
+    await joinRequest.save({ session });
+    console.log('تم إنشاء طلب الانضمام:', joinRequest._id);
+    await session.commitTransaction();
+    session.endSession();
     res.status(201).json({ message: 'تم تسجيل طلب الانضمام بنجاح', id: joinRequest._id });
   } catch (error) {
-    console.error('خطأ في تقديم طلب الانضمام:', error);
+    console.error('خطأ في تقديم طلب الانضمام:', error.message);
+    await session.abortTransaction();
+    session.endSession();
     res.status(500).json({ message: 'خطأ في الخادم', error: error.message });
   }
 });
 
 // Get all join requests
-router.get('/join-requests', async (req, res) => {
+router.get('/join-requests', authMiddleware, adminMiddleware, async (req, res) => {
   try {
     const joinRequests = await JoinRequest.find();
     console.log('تم جلب طلبات الانضمام:', joinRequests.length);
     res.json(joinRequests);
   } catch (error) {
-    console.error('خطأ في جلب طلبات الانضمام:', error);
+    console.error('خطأ في جلب طلبات الانضمام:', error.message);
     res.status(500).json({ message: 'خطأ في الخادم', error: error.message });
   }
 });
 
 // Approve a join request
-router.post('/join-requests/:id/approve', authMiddleware, async (req, res) => {
+router.post('/join-requests/:id/approve', authMiddleware, adminMiddleware, async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
   try {
@@ -142,7 +164,6 @@ router.post('/join-requests/:id/approve', authMiddleware, async (req, res) => {
     joinRequest.status = 'Approved';
     joinRequest.volunteerHours = 0;
     await joinRequest.save({ session });
-    console.log('تمت الموافقة على طلب الانضمام:', joinRequest);
 
     if (!validator.isEmail(joinRequest.email)) {
       await session.abortTransaction();
@@ -158,13 +179,10 @@ router.post('/join-requests/:id/approve', authMiddleware, async (req, res) => {
     }
 
     const randomPassword = crypto.randomBytes(8).toString('hex');
-    console.log('كلمة المرور المولدة:', randomPassword);
-
     const hashedPassword = await hash(randomPassword, 10);
-    console.log('تم إنشاء كلمة المرور المشفرة');
 
     const user = new User({
-      email: joinRequest.email,
+      email: joinRequest.email.toLowerCase().trim(),
       password: hashedPassword,
       numberOfStudents: 0,
       subjects: joinRequest.subjects || [],
@@ -187,7 +205,7 @@ router.post('/join-requests/:id/approve', authMiddleware, async (req, res) => {
       });
       console.log('تم إرسال البريد الإلكتروني إلى:', joinRequest.email);
     } catch (emailError) {
-      console.error('فشل إرسال البريد الإلكتروني:', emailError);
+      console.error('فشل إرسال البريد الإلكتروني:', emailError.message);
       await session.abortTransaction();
       session.endSession();
       return res.status(500).json({ message: 'فشل في إرسال البريد الإلكتروني', error: emailError.message });
@@ -195,21 +213,20 @@ router.post('/join-requests/:id/approve', authMiddleware, async (req, res) => {
 
     await session.commitTransaction();
     session.endSession();
-
     res.json({
       message: 'تم الموافقة على الطلب وإنشاء الحساب وإرسال كلمة المرور عبر البريد الإلكتروني',
       email: user.email,
     });
   } catch (error) {
-    console.error('خطأ في الموافقة على طلب الانضمام:', error);
+    console.error('خطأ في الموافقة على طلب الانضمام:', error.message);
     await session.abortTransaction();
     session.endSession();
-    res.status(500).json({ message: 'فشل في الموافقة على الطلب، تحقق من المعرف أو الاتصال بالخادم', error: error.message });
+    res.status(500).json({ message: 'فشل في الموافقة على الطلب', error: error.message });
   }
 });
 
 // Reject a join request
-router.post('/join-requests/:id/reject', authMiddleware, async (req, res) => {
+router.post('/join-requests/:id/reject', authMiddleware, adminMiddleware, async (req, res) => {
   try {
     const joinRequest = await JoinRequest.findById(req.params.id);
     if (!joinRequest) {
@@ -221,16 +238,16 @@ router.post('/join-requests/:id/reject', authMiddleware, async (req, res) => {
 
     joinRequest.status = 'Rejected';
     await joinRequest.save();
-    console.log('تم رفض طلب الانضمام:', joinRequest);
+    console.log('تم رفض طلب الانضمام:', joinRequest._id);
     res.json({ message: 'تم رفض الطلب' });
   } catch (error) {
-    console.error('خطأ في رفض طلب الانضمام:', error);
+    console.error('خطأ في رفض طلب الانضمام:', error.message);
     res.status(500).json({ message: 'خطأ في الخادم', error: error.message });
   }
 });
 
 // Delete an approved member
-router.delete('/members/:id', authMiddleware, async (req, res) => {
+router.delete('/members/:id', authMiddleware, adminMiddleware, async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
   try {
@@ -254,7 +271,7 @@ router.delete('/members/:id', authMiddleware, async (req, res) => {
       return res.status(400).json({ message: 'يجب أن يكون العضو قد تمت الموافقة عليه' });
     }
 
-    const user = await User.findOne({ email: joinRequest.email }).session(session);
+    const user = await User.findOne({ email: joinRequest.email.toLowerCase().trim() }).session(session);
     if (!user) {
       await session.abortTransaction();
       session.endSession();
@@ -267,21 +284,19 @@ router.delete('/members/:id', authMiddleware, async (req, res) => {
         await cloudinary.uploader.destroy(user.profileImagePublicId);
         console.log('تم حذف الصورة من Cloudinary:', user.profileImagePublicId);
       } catch (cloudinaryError) {
-        console.error('خطأ في حذف الصورة من Cloudinary:', cloudinaryError);
-        // Continue with user deletion even if Cloudinary deletion fails
+        console.error('خطأ في حذف الصورة من Cloudinary:', cloudinaryError.message);
       }
     }
 
     await JoinRequest.deleteOne({ _id: memberId }).session(session);
-    await User.deleteOne({ email: joinRequest.email }).session(session);
+    await User.deleteOne({ email: joinRequest.email.toLowerCase().trim() }).session(session);
 
     await session.commitTransaction();
     session.endSession();
-
     console.log('تم حذف العضو:', { memberId, email: joinRequest.email });
     res.json({ message: 'تم حذف العضو بنجاح' });
   } catch (error) {
-    console.error('خطأ في حذف العضو:', error);
+    console.error('خطأ في حذف العضو:', error.message);
     await session.abortTransaction();
     session.endSession();
     res.status(500).json({ message: 'خطأ في الخادم', error: error.message });
@@ -289,11 +304,15 @@ router.delete('/members/:id', authMiddleware, async (req, res) => {
 });
 
 // Get all approved members with details
-router.get('/approved-members', async (req, res) => {
+router.get('/approved-members', authMiddleware, adminMiddleware, async (req, res) => {
   try {
     const approvedMembers = await JoinRequest.find({ status: 'Approved' });
     const membersWithDetails = await Promise.all(approvedMembers.map(async (member) => {
-      const user = await User.findOne({ email: member.email });
+      const user = await User.findOne({ email: member.email.toLowerCase().trim() });
+      const lecturesWithStudentNames = user?.lectures.map(lecture => ({
+        ...lecture.toObject(),
+        studentName: user.students.find(s => s.email.toLowerCase() === lecture.studentEmail.toLowerCase())?.name || 'Unknown'
+      })) || [];
       return {
         id: member._id,
         name: member.name,
@@ -306,7 +325,7 @@ router.get('/approved-members', async (req, res) => {
         subjects: user?.subjects || [],
         students: user?.students || [],
         meetings: user?.meetings || [],
-        lectures: user?.lectures || [],
+        lectures: lecturesWithStudentNames,
         lectureCount: user?.lectureCount || 0,
         profileImage: user?.profileImage || null
       };
@@ -314,19 +333,23 @@ router.get('/approved-members', async (req, res) => {
     console.log('تم جلب الأعضاء المعتمدين:', membersWithDetails.length);
     res.json(membersWithDetails);
   } catch (error) {
-    console.error('خطأ في جلب الأعضاء المعتمدين:', error);
+    console.error('خطأ في جلب الأعضاء المعتمدين:', error.message);
     res.status(500).json({ message: 'خطأ في الخادم', error: error.message });
   }
 });
 
 // Get member details by ID
-router.get('/members/:id', async (req, res) => {
+router.get('/members/:id', authMiddleware, async (req, res) => {
   try {
     const member = await JoinRequest.findById(req.params.id);
     if (!member) {
       return res.status(404).json({ message: 'العضو غير موجود' });
     }
-    const user = await User.findOne({ email: member.email });
+    const user = await User.findOne({ email: member.email.toLowerCase().trim() });
+    const lecturesWithStudentNames = user?.lectures.map(lecture => ({
+      ...lecture.toObject(),
+      studentName: user.students.find(s => s.email.toLowerCase() === lecture.studentEmail.toLowerCase())?.name || 'Unknown'
+    })) || [];
     res.json({
       id: member._id,
       name: member.name,
@@ -338,20 +361,22 @@ router.get('/members/:id', async (req, res) => {
       numberOfStudents: user?.numberOfStudents || 0,
       subjects: user?.subjects || [],
       students: user?.students || [],
-      lectures: user?.lectures || [],
+      lectures: lecturesWithStudentNames,
       lectureCount: user?.lectureCount || 0,
       status: member.status,
       createdAt: member.createdAt,
       profileImage: user?.profileImage || null,
     });
   } catch (error) {
-    console.error('خطأ في جلب تفاصيل العضو:', error);
+    console.error('خطأ في جلب تفاصيل العضو:', error.message);
     res.status(500).json({ message: 'خطأ في الخادم', error: error.message });
   }
 });
 
 // Update member details
-router.put('/members/:id/update-details', async (req, res) => {
+router.put('/members/:id/update-details', authMiddleware, adminMiddleware, async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
   try {
     const { volunteerHours, numberOfStudents, students, subjects } = req.body;
 
@@ -361,58 +386,102 @@ router.put('/members/:id/update-details', async (req, res) => {
       !Array.isArray(students) ||
       !Array.isArray(subjects)
     ) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(400).json({ message: 'ساعات التطوع، عدد الطلاب، بيانات الطلاب، والمواد مطلوبة' });
     }
 
     if (volunteerHours < 0 || numberOfStudents < 0) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(400).json({ message: 'ساعات التطوع وعدد الطلاب يجب أن يكونا صفر أو أكثر' });
     }
 
     if (students.some(student => !student.name || !student.email || !student.phone)) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(400).json({ message: 'بيانات الطلاب يجب أن تحتوي على الاسم، البريد الإلكتروني، والهاتف' });
     }
 
     if (students.some(student => student.grade && !validator.isLength(student.grade, { min: 1, max: 50 }))) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(400).json({ message: 'الصف يجب أن يكون بين 1 و50 حرفًا إذا تم توفيره' });
     }
 
     if (students.some(student => student.subjects && !Array.isArray(student.subjects))) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(400).json({ message: 'المواد يجب أن تكون مصفوفة' });
     }
 
-    if (students.some(student => student.subjects && student.subjects.some(subject => !validator.isLength(subject, { min: 1, max: 100 })))) {
+    if (students.some(student => student.subjects && student.subjects.some(subject => !validator.isLength(subject.name, { min: 1, max: 100 })))) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(400).json({ message: 'كل مادة يجب أن تكون بين 1 و100 حرف إذا تم توفيرها' });
     }
 
-    const member = await JoinRequest.findById(req.params.id);
+    if (students.some(student => student.subjects && student.subjects.some(subject => subject.minLectures === undefined || subject.minLectures < 0))) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ message: 'الحد الأدنى للمحاضرات يجب أن يكون صفر أو أكثر' });
+    }
+
+    const member = await JoinRequest.findById(req.params.id).session(session);
     if (!member) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(404).json({ message: 'العضو غير موجود' });
     }
 
     if (member.status !== 'Approved') {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(400).json({ message: 'يجب أن يكون العضو قد تمت الموافقة عليه' });
     }
 
-    const user = await User.findOne({ email: member.email });
+    const user = await User.findOne({ email: member.email.toLowerCase().trim() }).session(session);
     if (!user) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(404).json({ message: 'حساب المستخدم غير موجود' });
     }
 
+    // Fix invalid lectures by removing entries with missing or invalid studentEmail
+    if (Array.isArray(user.lectures)) {
+      const originalLectureCount = user.lectures.length;
+      user.lectures = user.lectures.filter(lecture => lecture.studentEmail && validator.isEmail(lecture.studentEmail));
+      const removedCount = originalLectureCount - user.lectures.length;
+      if (removedCount > 0) {
+        console.log('تمت إزالة محاضرات غير صالحة:', { userId: user._id, removedCount });
+        user.lectureCount = Math.max(0, user.lectureCount - removedCount);
+      }
+    }
+
     member.volunteerHours = volunteerHours;
-    member.students = students;
+    member.students = students.map(student => ({
+      ...student,
+      email: student.email.toLowerCase().trim()
+    }));
     member.subjects = subjects;
 
     user.numberOfStudents = numberOfStudents;
-    user.students = students;
+    user.students = students.map(student => ({
+      ...student,
+      email: student.email.toLowerCase().trim()
+    }));
     user.subjects = subjects;
 
-    await Promise.all([member.save(), user.save()]);
+    await Promise.all([member.save({ session }), user.save({ session })]);
+
+    await session.commitTransaction();
+    session.endSession();
 
     console.log('تم تحديث تفاصيل العضو:', { 
       memberId: member._id,
       volunteerHours, 
       numberOfStudents, 
-      students, 
+      studentsCount: students.length, 
       subjects 
     });
 
@@ -423,80 +492,133 @@ router.put('/members/:id/update-details', async (req, res) => {
       students: user.students,
       subjects: user.subjects
     });
-    
   } catch (error) {
-    console.error('خطأ في تحديث تفاصيل العضو:', error);
+    console.error('خطأ في تحديث تفاصيل العضو:', error.message);
+    await session.abortTransaction();
+    session.endSession();
     res.status(500).json({ message: 'خطأ في الخادم', error: error.message });
   }
 });
 
 // Add a single student to a member
-router.post('/members/:id/add-student', async (req, res) => {
+router.post('/members/:id/add-student', authMiddleware, async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
   try {
     const { name, email, phone, grade, subjects } = req.body;
     if (!name || !email || !phone) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(400).json({ message: 'الاسم، البريد الإلكتروني، والهاتف مطلوبة للطالب' });
     }
     if (!validator.isEmail(email)) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(400).json({ message: 'البريد الإلكتروني للطالب غير صالح' });
     }
     if (grade && !validator.isLength(grade, { min: 1, max: 50 })) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(400).json({ message: 'الصف يجب أن يكون بين 1 و50 حرفًا إذا تم توفيره' });
     }
     if (subjects && !Array.isArray(subjects)) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(400).json({ message: 'المواد يجب أن تكون مصفوفة' });
     }
-    if (subjects && subjects.some(subject => !validator.isLength(subject, { min: 1, max: 100 }))) {
+    if (subjects && subjects.some(subject => !validator.isLength(subject.name, { min: 1, max: 100 }))) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(400).json({ message: 'كل مادة يجب أن تكون بين 1 و100 حرف إذا تم توفيرها' });
     }
+    if (subjects && subjects.some(subject => subject.minLectures === undefined || subject.minLectures < 0)) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ message: 'الحد الأدنى للمحاضرات يجب أن يكون صفر أو أكثر' });
+    }
 
-    const member = await JoinRequest.findById(req.params.id);
+    const member = await JoinRequest.findById(req.params.id).session(session);
     if (!member) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(404).json({ message: 'العضو غير موجود' });
     }
     if (member.status !== 'Approved') {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(400).json({ message: 'يجب أن يكون العضو قد تمت الموافقة عليه' });
     }
 
-    const user = await User.findOne({ email: member.email });
+    const user = await User.findOne({ email: member.email.toLowerCase().trim() }).session(session);
     if (!user) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(404).json({ message: 'حساب المستخدم غير موجود' });
     }
 
-    if (!Array.isArray(user.students)) {
-      user.students = [];
-    }
-    if (!Array.isArray(member.students)) {
-      member.students = [];
+    // التحقق من الحد الأقصى لعدد الطلاب (مثال: 50)
+    const MAX_STUDENTS = 50;
+    if (user.students.length >= MAX_STUDENTS) {
+      await session.abortTransaction();
+      session.endSession();
+      return res.status(400).json({ message: `لا يمكن إضافة المزيد من الطلاب، الحد الأقصى ${MAX_STUDENTS}` });
     }
 
-    if (user.students.some(student => student.email === email)) {
+    const normalizedEmail = email.toLowerCase().trim();
+    if (!Array.isArray(user.students)) user.students = [];
+    if (!Array.isArray(member.students)) member.students = [];
+
+    if (user.students.some(student => student.email.toLowerCase() === normalizedEmail)) {
+      await session.abortTransaction();
+      session.endSession();
       return res.status(400).json({ message: 'البريد الإلكتروني للطالب مستخدم بالفعل' });
     }
 
-    const newStudent = { name, email, phone, grade, subjects: subjects || [] };
+    // التحقق من أن المواد موجودة في قائمة المستخدم
+    if (subjects && Array.isArray(subjects)) {
+      const userSubjects = user.subjects.map(s => s.toLowerCase());
+      const invalidSubjects = subjects.filter(subject => !userSubjects.includes(subject.name.toLowerCase()));
+      if (invalidSubjects.length > 0) {
+        await session.abortTransaction();
+        session.endSession();
+        return res.status(400).json({ message: `المواد التالية غير موجودة في قائمة المستخدم: ${invalidSubjects.map(s => s.name).join(', ')}` });
+      }
+    }
+
+    const newStudent = { 
+      name, 
+      email: normalizedEmail, 
+      phone, 
+      grade, 
+      subjects: subjects ? subjects.map(subject => ({
+        name: subject.name.toLowerCase().trim(),
+        minLectures: subject.minLectures
+      })) : [] 
+    };
     user.students.push(newStudent);
     member.students.push(newStudent);
     user.numberOfStudents = (user.numberOfStudents || 0) + 1;
 
-    // Ensure subjects arrays are initialized before updating
-    if (!Array.isArray(user.subjects)) {
-      user.subjects = [];
-    }
-    if (!Array.isArray(member.subjects)) {
-      member.subjects = [];
-    }
+    if (!Array.isArray(user.subjects)) user.subjects = [];
+    if (!Array.isArray(member.subjects)) member.subjects = [];
 
-    // Update user.subjects to include any new subjects from the student's subjects
     if (subjects && Array.isArray(subjects)) {
-      user.subjects = [...new Set([...user.subjects, ...subjects])];
-      member.subjects = [...new Set([...member.subjects, ...subjects])];
+      const subjectNames = subjects.map(subject => subject.name.toLowerCase().trim());
+      user.subjects = [...new Set([...user.subjects, ...subjectNames])];
+      member.subjects = [...new Set([...member.subjects, ...subjectNames])];
     }
 
-    await Promise.all([member.save(), user.save()]);
+    // تحديث ساعات التطوع
+    member.volunteerHours = (member.volunteerHours || 0) + 1;
+
+    await Promise.all([member.save({ session }), user.save({ session })]);
+
+    await session.commitTransaction();
+    session.endSession();
+
     console.log('تم إضافة الطالب:', { 
       memberId: member._id, 
-      student: newStudent, 
+      studentEmail: normalizedEmail, 
       numberOfStudents: user.numberOfStudents 
     });
 
@@ -504,11 +626,12 @@ router.post('/members/:id/add-student', async (req, res) => {
       message: 'تم إضافة الطالب بنجاح',
       student: newStudent,
       numberOfStudents: user.numberOfStudents,
-      students: user.students,
       subjects: user.subjects
     });
   } catch (error) {
-    console.error('خطأ في إضافة الطالب:', error.stack);
+    console.error('خطأ في إضافة الطالب:', error.message);
+    await session.abortTransaction();
+    session.endSession();
     res.status(500).json({ message: 'خطأ في الخادم', error: error.message });
   }
 });
@@ -516,22 +639,35 @@ router.post('/members/:id/add-student', async (req, res) => {
 // Login
 router.post('/login', async (req, res) => {
   try {
+    console.log('Login request received:', req.body);
     const { email, password } = req.body;
     if (!email || !password) {
+      console.log('Missing email or password');
       return res.status(400).json({ message: 'البريد الإلكتروني وكلمة المرور مطلوبان' });
     }
-    if (!validator.isEmail(email)) {
+
+    const normalizedEmail = email.toLowerCase().trim();
+    console.log('Normalized email:', normalizedEmail);
+    if (!validator.isEmail(normalizedEmail)) {
+      console.log('Invalid email format:', normalizedEmail);
       return res.status(400).json({ message: 'البريد الإلكتروني غير صالح' });
     }
 
-    const user = await User.findOne({ email });
+    const user = await User.findOne({ email: normalizedEmail });
     if (!user) {
+      console.log('User not found for email:', normalizedEmail);
       return res.status(400).json({ message: 'بيانات تسجيل الدخول غير صحيحة' });
     }
 
     const isMatch = await compare(password, user.password);
     if (!isMatch) {
+      console.log('Password mismatch for user:', normalizedEmail);
       return res.status(400).json({ message: 'بيانات تسجيل الدخول غير صحيحة' });
+    }
+
+    if (!process.env.JWT_SECRET) {
+      console.error('JWT_SECRET is not defined');
+      return res.status(500).json({ message: 'خطأ في إعدادات الخادم' });
     }
 
     const token = sign(
@@ -539,9 +675,10 @@ router.post('/login', async (req, res) => {
       process.env.JWT_SECRET,
       { expiresIn: '1h' }
     );
-    res.json({ token });
+    console.log('Login successful, token generated for:', normalizedEmail);
+    res.json({ token, userId: user._id, role: user.role });
   } catch (error) {
-    console.error('خطأ في تسجيل الدخول:', error);
+    console.error('Login error:', error.message);
     res.status(500).json({ message: 'خطأ في الخادم', error: error.message });
   }
 });
@@ -551,26 +688,24 @@ router.get('/profile', authMiddleware, async (req, res) => {
   try {
     const user = await User.findById(req.userId);
     if (!user) {
+      console.error('User not found for ID:', req.userId);
       return res.status(404).json({ message: 'المستخدم غير موجود' });
     }
-    const joinRequest = await JoinRequest.findOne({ email: user.email });
+    const joinRequest = await JoinRequest.findOne({ email: user.email.toLowerCase().trim() });
 
-    // Filter out expired messages for display
     const currentDate = new Date();
     user.messages = user.messages.filter(message => message.displayUntil > currentDate);
+    await user.save();
 
-    await user.save(); // Save to persist filtered messages
+    const lecturesWithStudentNames = user?.lectures.map(lecture => ({
+      ...lecture.toObject(),
+      studentName: user.students.find(s => s.email.toLowerCase() === lecture.studentEmail.toLowerCase())?.name || 'Unknown'
+    })) || [];
 
     console.log('تم جلب الملف الشخصي:', {
       userId: req.userId,
-      numberOfStudents: user.numberOfStudents,
-      students: user.students,
-      subjects: user.subjects,
-      meetings: user.meetings,
-      lectures: user.lectures,
-      lectureCount: user.lectureCount,
-      profileImage: user.profileImage,
-      messages: user.messages
+      email: user.email,
+      numberOfStudents: user.numberOfStudents
     });
 
     res.json({
@@ -585,7 +720,7 @@ router.get('/profile', authMiddleware, async (req, res) => {
           subjects: user.subjects || [],
           students: user.students || [],
           meetings: user.meetings || [],
-          lectures: user.lectures || [],
+          lectures: lecturesWithStudentNames,
           lectureCount: user.lectureCount || 0,
           messages: user.messages || []
         },
@@ -596,15 +731,15 @@ router.get('/profile', authMiddleware, async (req, res) => {
           address: joinRequest.address,
           volunteerHours: joinRequest.volunteerHours || 0,
           status: joinRequest.status,
-          students: user.students || [],
-          subjects: user.subjects || [],
-          lectures: user.lectures || [],
+          students: joinRequest.students || [],
+          subjects: joinRequest.subjects || [],
+          lectures: lecturesWithStudentNames,
           lectureCount: user.lectureCount || 0
         } : null
       }
     });
   } catch (error) {
-    console.error('خطأ في جلب الملف الشخصي:', error);
+    console.error('خطأ في جلب الملف الشخصي:', error.message);
     res.status(500).json({ message: 'خطأ في الخادم', error: error.message });
   }
 });
@@ -634,118 +769,81 @@ router.put('/profile/password', authMiddleware, async (req, res) => {
     await user.save();
     res.json({ success: true, message: 'تم تحديث كلمة المرور بنجاح' });
   } catch (error) {
-    console.error('خطأ في تحديث كلمة المرور:', error);
+    console.error('خطأ في تحديث كلمة المرور:', error.message);
     res.status(500).json({ message: 'خطأ في الخادم', error: error.message });
   }
 });
 
 // Upload profile image to Cloudinary
-router.post('/profile/image', authMiddleware, (req, res) => {
-  console.log('تلقي طلب رفع صورة شخصية...');
-  
-  upload.single('profileImage')(req, res, async (err) => {
-    try {
-      if (err) {
-        console.error('خطأ في multer:', err.message);
-        if (err instanceof multer.MulterError) {
-          if (err.code === 'LIMIT_FILE_SIZE') {
-            return res.status(400).json({ 
-              success: false,
-              message: 'حجم الملف كبير جداً. الحد الأقصى هو 10MB' 
-            });
-          }
-        }
-        return res.status(400).json({ 
-          success: false,
-          message: err.message || 'خطأ في رفع الملف' 
-        });
-      }
-
-      if (!req.file) {
-        console.log('لم يتم تلقي أي ملف');
-        return res.status(400).json({ 
-          success: false,
-          message: 'يرجى اختيار صورة للرفع' 
-        });
-      }
-
-      console.log('تم تلقي الملف:', {
-        originalname: req.file.originalname,
-        mimetype: req.file.mimetype,
-        size: req.file.size
-      });
-
-      const user = await User.findById(req.userId);
-      if (!user) {
-        return res.status(404).json({ 
-          success: false,
-          message: 'المستخدم غير موجود' 
-        });
-      }
-
-      // Delete old image from Cloudinary if exists
-      if (user.profileImagePublicId) {
-        try {
-          await cloudinary.uploader.destroy(user.profileImagePublicId);
-          console.log('تم حذف الصورة القديمة من Cloudinary:', user.profileImagePublicId);
-        } catch (deleteError) {
-          console.error('خطأ في حذف الصورة القديمة من Cloudinary:', deleteError);
-        }
-      }
-
-      // Upload new image to Cloudinary
-      const uploadResult = await new Promise((resolve, reject) => {
-        cloudinary.uploader.upload_stream(
-          {
-            folder: 'profile_images',
-            resource_type: 'image',
-            transformation: [
-              { width: 500, height: 500, crop: 'limit' },
-              { quality: 'auto' },
-              { format: 'auto' }
-            ]
-          },
-          (error, result) => {
-            if (error) {
-              console.error('خطأ في رفع الصورة إلى Cloudinary:', error);
-              reject(error);
-            } else {
-              console.log('تم رفع الصورة إلى Cloudinary بنجاح:', result?.secure_url);
-              resolve(result);
-            }
-          }
-        ).end(req.file.buffer);
-      });
-
-      // Update user profile with new image URL and public_id
-      user.profileImage = uploadResult.secure_url;
-      user.profileImagePublicId = uploadResult.public_id;
-      await user.save();
-
-      console.log('تم تحديث بيانات المستخدم بالصورة الجديدة:', {
-        profileImage: user.profileImage,
-        profileImagePublicId: user.profileImagePublicId
-      });
-
-      res.json({
-        success: true,
-        message: 'تم رفع الصورة الشخصية بنجاح',
-        data: { 
-          profileImage: uploadResult.secure_url,
-          fileName: req.file.originalname,
-          fileSize: req.file.size
-        }
-      });
-
-    } catch (error) {
-      console.error('خطأ في رفع الصورة الشخصية:', error);
-      res.status(500).json({ 
-        success: false,
-        message: 'خطأ في الخادم أثناء رفع الصورة', 
-        error: error.message 
-      });
+router.post('/profile/image', authMiddleware, upload.single('profileImage'), async (req, res) => {
+  try {
+    if (!req.file) {
+      console.log('لم يتم تلقي أي ملف');
+      return res.status(400).json({ success: false, message: 'يرجى اختيار صورة للرفع' });
     }
-  });
+
+    console.log('تم تلقي الملف:', {
+      originalname: req.file.originalname,
+      mimetype: req.file.mimetype,
+      size: req.file.size
+    });
+
+    const user = await User.findById(req.userId);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'المستخدم غير موجود' });
+    }
+
+    // Delete old image from Cloudinary if exists
+    if (user.profileImagePublicId) {
+      try {
+        await cloudinary.uploader.destroy(user.profileImagePublicId);
+        console.log('تم حذف الصورة القديمة من Cloudinary:', user.profileImagePublicId);
+      } catch (deleteError) {
+        console.error('خطأ في حذف الصورة القديمة من Cloudinary:', deleteError.message);
+      }
+    }
+
+    // Upload new image to Cloudinary
+    const uploadResult = await new Promise((resolve, reject) => {
+      cloudinary.uploader.upload_stream(
+        {
+          folder: 'profile_images',
+          resource_type: 'image',
+          transformation: [
+            { width: 500, height: 500, crop: 'limit' },
+            { quality: 'auto' },
+            { format: 'auto' }
+          ]
+        },
+        (error, result) => {
+          if (error) reject(error);
+          else resolve(result);
+        }
+      ).end(req.file.buffer);
+    });
+
+    user.profileImage = uploadResult.secure_url;
+    user.profileImagePublicId = uploadResult.public_id;
+    await user.save();
+
+    console.log('تم تحديث بيانات المستخدم بالصورة الجديدة:', {
+      profileImage: user.profileImage,
+      profileImagePublicId: user.profileImagePublicId
+    });
+
+    res.json({
+      success: true,
+      message: 'تم رفع الصورة الشخصية بنجاح',
+      data: { 
+        profileImage: uploadResult.secure_url,
+        fileName: req.file.originalname,
+        fileSize: req.file.size
+      }
+    });
+  } catch (error) {
+    console.error('خطأ في رفع الصورة الشخصية:', error.message);
+    res.status(500).json({ success: false, message: 'خطأ في الخادم أثناء رفع الصورة', error: error.message });
+  }
 });
 
 // Delete profile image
@@ -753,44 +851,28 @@ router.delete('/profile/image', authMiddleware, async (req, res) => {
   try {
     const user = await User.findById(req.userId);
     if (!user) {
-      return res.status(404).json({ 
-        success: false,
-        message: 'المستخدم غير موجود' 
-      });
+      return res.status(404).json({ success: false, message: 'المستخدم غير موجود' });
     }
 
     if (!user.profileImagePublicId) {
-      return res.status(400).json({
-        success: false,
-        message: 'لا توجد صورة شخصية لحذفها'
-      });
+      return res.status(400).json({ success: false, message: 'لا توجد صورة شخصية لحذفها' });
     }
 
-    // Delete image from Cloudinary
     try {
       await cloudinary.uploader.destroy(user.profileImagePublicId);
       console.log('تم حذف الصورة من Cloudinary:', user.profileImagePublicId);
     } catch (cloudinaryError) {
-      console.error('خطأ في حذف الصورة من Cloudinary:', cloudinaryError);
+      console.error('خطأ في حذف الصورة من Cloudinary:', cloudinaryError.message);
     }
 
-    // Remove image references from user document
     user.profileImage = null;
     user.profileImagePublicId = null;
     await user.save();
 
-    res.json({
-      success: true,
-      message: 'تم حذف الصورة الشخصية بنجاح'
-    });
-
+    res.json({ success: true, message: 'تم حذف الصورة الشخصية بنجاح' });
   } catch (error) {
-    console.error('خطأ في حذف الصورة الشخصية:', error);
-    res.status(500).json({
-      success: false,
-      message: 'خطأ في الخادم أثناء حذف الصورة',
-      error: error.message
-    });
+    console.error('خطأ في حذف الصورة الشخصية:', error.message);
+    res.status(500).json({ success: false, message: 'خطأ في الخادم أثناء حذف الصورة', error: error.message });
   }
 });
 
@@ -812,14 +894,11 @@ router.post('/profile/meetings', authMiddleware, async (req, res) => {
       return res.status(404).json({ message: 'المستخدم غير موجود' });
     }
 
-    if (!Array.isArray(user.meetings)) {
-      user.meetings = [];
-      console.log('تم تهيئة مصفوفة المواعيد كمصفوفة فارغة');
-    }
+    if (!Array.isArray(user.meetings)) user.meetings = [];
 
     user.meetings.push({ title, date: parsedDate, startTime, endTime, reminded: false });
     await user.save();
-    console.log('تم إضافة الموعد:', user.meetings);
+    console.log('تم إضافة الموعد:', user.meetings[user.meetings.length - 1]);
 
     const formattedMeetings = user.meetings.map(meeting => ({
       _id: meeting._id,
@@ -832,7 +911,7 @@ router.post('/profile/meetings', authMiddleware, async (req, res) => {
 
     res.json({ message: 'تم إضافة الموعد بنجاح', meetings: formattedMeetings });
   } catch (error) {
-    console.error('خطأ في إضافة الموعد:', error);
+    console.error('خطأ في إضافة الموعد:', error.message);
     res.status(500).json({ message: 'خطأ في الخادم', error: error.message });
   }
 });
@@ -873,7 +952,7 @@ router.put('/profile/meetings/:meetingId', authMiddleware, async (req, res) => {
     meeting.reminded = false;
 
     await user.save();
-    console.log('تم تحديث الموعد:', user.meetings);
+    console.log('تم تحديث الموعد:', meetingId);
 
     const formattedMeetings = user.meetings.map(meeting => ({
       _id: meeting._id,
@@ -886,7 +965,7 @@ router.put('/profile/meetings/:meetingId', authMiddleware, async (req, res) => {
 
     res.json({ message: 'تم تحديث الموعد بنجاح', meetings: formattedMeetings });
   } catch (error) {
-    console.error('خطأ في تحديث الموعد:', error);
+    console.error('خطأ في تحديث الموعد:', error.message);
     res.status(500).json({ message: 'خطأ في الخادم', error: error.message });
   }
 });
@@ -895,8 +974,6 @@ router.put('/profile/meetings/:meetingId', authMiddleware, async (req, res) => {
 router.delete('/profile/meetings/:meetingId', authMiddleware, async (req, res) => {
   try {
     const meetingId = req.params.meetingId;
-    console.log('تلقي طلب حذف موعد مع المعرف:', meetingId);
-
     if (!mongoose.Types.ObjectId.isValid(meetingId)) {
       console.error('معرف الموعد غير صالح:', meetingId);
       return res.status(400).json({ message: 'معرف الموعد غير صالح' });
@@ -916,7 +993,7 @@ router.delete('/profile/meetings/:meetingId', authMiddleware, async (req, res) =
 
     user.meetings.pull(meetingId);
     await user.save();
-    console.log('تم حذف الموعد، المواعيد المحدثة:', user.meetings);
+    console.log('تم حذف الموعد:', meetingId);
 
     const formattedMeetings = user.meetings.map(meeting => ({
       _id: meeting._id,
@@ -929,7 +1006,7 @@ router.delete('/profile/meetings/:meetingId', authMiddleware, async (req, res) =
 
     res.json({ message: 'تم حذف الموعد بنجاح', meetings: formattedMeetings });
   } catch (error) {
-    console.error('خطأ في حذف الموعد:', error);
+    console.error('خطأ في حذف الموعد:', error.message);
     res.status(500).json({ message: 'خطأ في الخادم', error: error.message });
   }
 });
@@ -945,7 +1022,8 @@ router.post('/forgot-password', async (req, res) => {
       return res.status(400).json({ message: 'البريد الإلكتروني غير صالح' });
     }
 
-    const user = await User.findOne({ email });
+    const normalizedEmail = email.toLowerCase().trim();
+    const user = await User.findOne({ email: normalizedEmail });
     if (!user) {
       return res.status(404).json({ message: 'المستخدم غير موجود' });
     }
@@ -962,21 +1040,21 @@ router.post('/forgot-password', async (req, res) => {
 
     try {
       await sendEmail({
-        to: email,
+        to: normalizedEmail,
         subject: 'إعادة تعيين كلمة المرور',
         text: message,
       });
-      console.log('تم إرسال بريد إلكتروني لإعادة تعيين كلمة المرور إلى:', email, 'مع الرابط:', resetUrl);
+      console.log('تم إرسال بريد إلكتروني لإعادة تعيين كلمة المرور إلى:', normalizedEmail);
       res.json({ message: 'تم إرسال رابط إعادة تعيين كلمة المرور إلى بريدك الإلكتروني' });
     } catch (emailError) {
-      console.error('فشل إرسال بريد إلكتروني لإعادة تعيين كلمة المرور:', emailError);
+      console.error('فشل إرسال بريد إلكتروني لإعادة تعيين كلمة المرور:', emailError.message);
       user.resetToken = null;
       user.tokenExpire = null;
       await user.save();
       return res.status(500).json({ message: 'فشل في إرسال البريد الإلكتروني', error: emailError.message });
     }
   } catch (error) {
-    console.error('خطأ في طلب إعادة تعيين كلمة المرور:', error);
+    console.error('خطأ في طلب إعادة تعيين كلمة المرور:', error.message);
     res.status(500).json({ message: 'خطأ في الخادم', error: error.message });
   }
 });
@@ -1014,7 +1092,7 @@ router.post('/profile/meetings/:meetingId/remind', authMiddleware, async (req, r
     }));
     res.json({ message: 'تم إرسال التذكير اليدوي بنجاح', meetings: formattedMeetings });
   } catch (error) {
-    console.error('خطأ في إرسال التذكير اليدوي:', error);
+    console.error('خطأ في إرسال التذكير اليدوي:', error.message);
     res.status(500).json({ message: 'خطأ في الخادم', error: error.message });
   }
 });
@@ -1036,23 +1114,18 @@ router.post('/admin/send-message', authMiddleware, adminMiddleware, async (req, 
       return res.status(400).json({ message: 'عدد الأيام يجب أن يكون عددًا صحيحًا بين 1 و30' });
     }
 
-    // Find JoinRequest by userId
     const joinRequest = await JoinRequest.findById(userId);
     if (!joinRequest) {
       return res.status(404).json({ message: 'طلب الانضمام غير موجود' });
     }
 
-    // Find user by email from JoinRequest
-    const targetUser = await User.findOne({ email: joinRequest.email });
+    const targetUser = await User.findOne({ email: joinRequest.email.toLowerCase().trim() });
     if (!targetUser) {
       return res.status(404).json({ message: 'المستخدم غير موجود' });
     }
 
-    if (!Array.isArray(targetUser.messages)) {
-      targetUser.messages = [];
-    }
+    if (!Array.isArray(targetUser.messages)) targetUser.messages = [];
 
-    // Check for active (non-expired) messages
     const currentDate = new Date();
     const activeMessages = targetUser.messages.filter(message => message.displayUntil > currentDate);
     if (activeMessages.length > 0) {
@@ -1066,7 +1139,6 @@ router.post('/admin/send-message', authMiddleware, adminMiddleware, async (req, 
       });
     }
 
-    // Calculate displayUntil date
     const displayUntil = new Date();
     displayUntil.setDate(displayUntil.getDate() + displayDays);
 
@@ -1077,7 +1149,7 @@ router.post('/admin/send-message', authMiddleware, adminMiddleware, async (req, 
 
     res.json({ message: 'تم إرسال الرسالة بنجاح', displayUntil });
   } catch (error) {
-    console.error('خطأ في إرسال الرسالة:', error);
+    console.error('خطأ في إرسال الرسالة:', error.message);
     res.status(500).json({ message: 'خطأ في الخادم', error: error.message });
   }
 });
@@ -1099,25 +1171,21 @@ router.put('/admin/edit-message', authMiddleware, adminMiddleware, async (req, r
       return res.status(400).json({ message: 'عدد الأيام يجب أن يكون عددًا صحيحًا بين 1 و30' });
     }
 
-    // Find JoinRequest by userId
     const joinRequest = await JoinRequest.findById(userId);
     if (!joinRequest) {
       return res.status(404).json({ message: 'طلب الانضمام غير موجود' });
     }
 
-    // Find user by email from JoinRequest
-    const targetUser = await User.findOne({ email: joinRequest.email });
+    const targetUser = await User.findOne({ email: joinRequest.email.toLowerCase().trim() });
     if (!targetUser) {
       return res.status(404).json({ message: 'المستخدم غير موجود' });
     }
 
-    // Find the message
     const message = targetUser.messages.id(messageId);
     if (!message) {
       return res.status(404).json({ message: 'الرسالة غير موجودة' });
     }
 
-    // Update message content and displayUntil
     const displayUntil = new Date();
     displayUntil.setDate(displayUntil.getDate() + displayDays);
     message.content = content;
@@ -1129,7 +1197,7 @@ router.put('/admin/edit-message', authMiddleware, adminMiddleware, async (req, r
 
     res.json({ message: 'تم تعديل الرسالة بنجاح', displayUntil });
   } catch (error) {
-    console.error('خطأ في تعديل الرسالة:', error);
+    console.error('خطأ في تعديل الرسالة:', error.message);
     res.status(500).json({ message: 'خطأ في الخادم', error: error.message });
   }
 });
@@ -1145,19 +1213,16 @@ router.delete('/admin/delete-message', authMiddleware, adminMiddleware, async (r
       return res.status(400).json({ message: 'معرف المستخدم أو معرف الرسالة غير صالح' });
     }
 
-    // Find JoinRequest by userId
     const joinRequest = await JoinRequest.findById(userId);
     if (!joinRequest) {
       return res.status(404).json({ message: 'طلب الانضمام غير موجود' });
     }
 
-    // Find user by email from JoinRequest
-    const targetUser = await User.findOne({ email: joinRequest.email });
+    const targetUser = await User.findOne({ email: joinRequest.email.toLowerCase().trim() });
     if (!targetUser) {
       return res.status(404).json({ message: 'المستخدم غير موجود' });
     }
 
-    // Find and remove the message
     const message = targetUser.messages.id(messageId);
     if (!message) {
       return res.status(404).json({ message: 'الرسالة غير موجودة' });
@@ -1170,7 +1235,60 @@ router.delete('/admin/delete-message', authMiddleware, adminMiddleware, async (r
 
     res.json({ message: 'تم حذف الرسالة بنجاح' });
   } catch (error) {
-    console.error('خطأ في حذف الرسالة:', error);
+    console.error('خطأ في حذف الرسالة:', error.message);
+    res.status(500).json({ message: 'خطأ في الخادم', error: error.message });
+  }
+});
+
+// Get members with low lecture counts
+router.get('/low-lecture-members', authMiddleware, adminMiddleware, async (req, res) => {
+  try {
+    const approvedMembers = await JoinRequest.find({ status: 'Approved' });
+    const lowLectureMembers = [];
+
+    for (const member of approvedMembers) {
+      const user = await User.findOne({ email: member.email.toLowerCase().trim() });
+      if (!user) continue;
+
+      const lowLectureStudents = [];
+      for (const student of user.students) {
+        const lowLectureSubjects = [];
+        for (const subject of student.subjects) {
+          const lectureCount = user.lectures.filter(
+            lecture => lecture.studentEmail.toLowerCase() === student.email.toLowerCase() &&
+                      lecture.subject.toLowerCase() === subject.name.toLowerCase()
+          ).length;
+          if (lectureCount < subject.minLectures) {
+            lowLectureSubjects.push({
+              name: subject.name,
+              currentLectures: lectureCount,
+              minLectures: subject.minLectures
+            });
+          }
+        }
+        if (lowLectureSubjects.length > 0) {
+          lowLectureStudents.push({
+            studentEmail: student.email,
+            studentName: student.name,
+            subjects: lowLectureSubjects
+          });
+        }
+      }
+
+      if (lowLectureStudents.length > 0) {
+        lowLectureMembers.push({
+          id: member._id,
+          name: member.name,
+          email: member.email,
+          lowLectureStudents
+        });
+      }
+    }
+
+    console.log('تم جلب الأعضاء ذوي المحاضرات المنخفضة:', lowLectureMembers.length);
+    res.json(lowLectureMembers);
+  } catch (error) {
+    console.error('خطأ في جلب الأعضاء ذوي المحاضرات المنخفضة:', error.message);
     res.status(500).json({ message: 'خطأ في الخادم', error: error.message });
   }
 });

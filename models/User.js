@@ -5,6 +5,8 @@ const userSchema = new Schema({
     type: String,
     required: true,
     unique: true,
+    lowercase: true, // Ensure email is stored in lowercase
+    trim: true
   },
   password: {
     type: String,
@@ -24,6 +26,10 @@ const userSchema = new Schema({
     type: String,
     default: null,
   },
+  profileImagePublicId: {
+    type: String,
+    default: null,
+  },
   numberOfStudents: {
     type: Number,
     default: 0,
@@ -31,14 +37,18 @@ const userSchema = new Schema({
   },
   subjects: [{
     type: String,
-    trim: true
+    trim: true,
+    default: []
   }],
   students: [{
     name: { type: String, required: true },
-    email: { type: String, required: true },
+    email: { type: String, required: true, lowercase: true, trim: true },
     phone: { type: String, required: true },
     grade: { type: String, required: false, trim: true },
-    subjects: [{ type: String, required: false, trim: true }]
+    subjects: [{
+      name: { type: String, required: true, trim: true },
+      minLectures: { type: Number, required: true, min: 0 }
+    }]
   }],
   meetings: [{
     _id: { type: Schema.Types.ObjectId, auto: true },
@@ -52,10 +62,19 @@ const userSchema = new Schema({
     link: { type: String, required: true },
     name: { type: String, required: true },
     subject: { type: String, required: true },
+    studentEmail: { type: String, required: true, lowercase: true, trim: true },
     createdAt: { type: Date, default: Date.now },
     _id: { type: Schema.Types.ObjectId, auto: true }
   }],
-  lectureCount: { type: Number, default: 0 },
+lowLectureWeekCount: {
+    type: Number,
+    default: 0,
+    min: 0
+  },
+  lastLowLectureWeek: {
+    type: Date,
+    default: null
+  },
   resetToken: {
     type: String,
     default: null
@@ -67,11 +86,11 @@ const userSchema = new Schema({
   messages: [{
     content: { type: String, required: true },
     createdAt: { type: Date, default: Date.now },
-    displayUntil: { type: Date, required: true, index: { expires: 0 } } // TTL index for auto-deletion
+    displayUntil: { type: Date, required: true, index: { expires: 0 } }
   }]
 });
 
-// Ensure TTL index is created for automatic deletion
+userSchema.index({ email: 1 }, { unique: true });
 userSchema.index({ 'messages.displayUntil': 1 }, { expireAfterSeconds: 0 });
 
 export default model('User', userSchema);
