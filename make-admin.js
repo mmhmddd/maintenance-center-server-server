@@ -52,7 +52,7 @@ const makeUserAdmin = async (email) => {
 // Execute the script
 const run = async () => {
   await connectDB();
-  await makeUserAdmin('medo27383298@gmail.com'); // Updated email
+  await makeUserAdmin('mohamed.m.mahmoud29@gmail.com'); // Updated email
 };
 
 run();

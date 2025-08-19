@@ -666,7 +666,6 @@ async function checkLowLectureMembers(isCronJob = false, session = null) {
       }
     }
 
-    // Save report (always, to ensure DELETE can access it)
     const report = new LowLectureReport({
       weekStart,
       weekEnd,

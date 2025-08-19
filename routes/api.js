@@ -351,21 +351,25 @@ router.get('/members/:id', authMiddleware, async (req, res) => {
       studentName: user.students.find(s => s.email.toLowerCase() === lecture.studentEmail.toLowerCase())?.name || 'Unknown'
     })) || [];
     res.json({
-      id: member._id,
-      name: member.name,
-      email: member.email,
-      phone: member.number,
-      address: member.address,
-      academicSpecialization: member.academicSpecialization,
-      volunteerHours: member.volunteerHours || 0,
-      numberOfStudents: user?.numberOfStudents || 0,
-      subjects: user?.subjects || [],
-      students: user?.students || [],
-      lectures: lecturesWithStudentNames,
-      lectureCount: user?.lectureCount || 0,
-      status: member.status,
-      createdAt: member.createdAt,
-      profileImage: user?.profileImage || null,
+      success: true, // إضافة حقل success لتتناسب مع JoinRequestResponse
+      member: {
+        id: member._id,
+        name: member.name,
+        email: member.email,
+        phone: member.number,
+        address: member.address,
+        academicSpecialization: member.academicSpecialization,
+        volunteerHours: member.volunteerHours || 0,
+        numberOfStudents: user?.numberOfStudents || 0,
+        subjects: user?.subjects || [],
+        students: user?.students || [],
+        lectures: lecturesWithStudentNames,
+        lectureCount: user?.lectureCount || 0,
+        status: member.status,
+        createdAt: member.createdAt,
+        profileImage: user?.profileImage || null,
+        messages: user?.messages || []
+      }
     });
   } catch (error) {
     console.error('خطأ في جلب تفاصيل العضو:', error.message);
@@ -1097,7 +1101,8 @@ router.post('/profile/meetings/:meetingId/remind', authMiddleware, async (req, r
   }
 });
 
-// Send message from admin to user
+
+// Send a message
 router.post('/admin/send-message', authMiddleware, adminMiddleware, async (req, res) => {
   try {
     const { userId, content, displayDays } = req.body;
@@ -1124,37 +1129,60 @@ router.post('/admin/send-message', authMiddleware, adminMiddleware, async (req, 
       return res.status(404).json({ message: 'المستخدم غير موجود' });
     }
 
-    if (!Array.isArray(targetUser.messages)) targetUser.messages = [];
-
-    const currentDate = new Date();
-    const activeMessages = targetUser.messages.filter(message => message.displayUntil > currentDate);
-    if (activeMessages.length > 0) {
-      return res.status(400).json({ 
-        message: 'يوجد رسالة نشطة بالفعل، يرجى تعديلها أو حذفها أولاً',
-        activeMessage: {
-          _id: activeMessages[0]._id,
-          content: activeMessages[0].content,
-          displayUntil: activeMessages[0].displayUntil
-        }
-      });
+    const now = new Date();
+    if (targetUser.messages && targetUser.messages.length > 0) {
+      const activeMessage = targetUser.messages.find(
+        (msg) => new Date(msg.displayUntil) > now
+      );
+      if (activeMessage) {
+        return res.status(400).json({
+          message: 'يوجد رسالة نشطة بالفعل، يرجى تعديلها أو حذفها أولاً',
+          activeMessage: {
+            _id: activeMessage._id,
+            content: activeMessage.content,
+            displayUntil: activeMessage.displayUntil,
+          },
+        });
+      }
     }
 
     const displayUntil = new Date();
     displayUntil.setDate(displayUntil.getDate() + displayDays);
 
-    targetUser.messages.push({ content, displayUntil });
+    const newMessage = {
+      _id: new mongoose.Types.ObjectId(),
+      content,
+      displayUntil,
+      createdAt: new Date(),
+    };
+
+    targetUser.messages = [newMessage];
     await targetUser.save();
 
-    console.log('تم إرسال الرسالة إلى المستخدم:', { userId, email: joinRequest.email, content, displayUntil });
+    console.log('تم إرسال الرسالة:', {
+      userId,
+      messageId: newMessage._id,
+      email: joinRequest.email,
+      content,
+      displayUntil,
+    });
 
-    res.json({ message: 'تم إرسال الرسالة بنجاح', displayUntil });
+    res.json({
+      success: true,
+      message: 'تم إرسال الرسالة بنجاح',
+      data: {
+        _id: newMessage._id,
+        content: newMessage.content,
+        displayUntil: newMessage.displayUntil,
+      },
+    });
   } catch (error) {
     console.error('خطأ في إرسال الرسالة:', error.message);
     res.status(500).json({ message: 'خطأ في الخادم', error: error.message });
   }
 });
 
-// Edit an existing message
+// Edit a message
 router.put('/admin/edit-message', authMiddleware, adminMiddleware, async (req, res) => {
   try {
     const { userId, messageId, content, displayDays } = req.body;
@@ -1236,6 +1264,53 @@ router.delete('/admin/delete-message', authMiddleware, adminMiddleware, async (r
     res.json({ message: 'تم حذف الرسالة بنجاح' });
   } catch (error) {
     console.error('خطأ في حذف الرسالة:', error.message);
+    res.status(500).json({ message: 'خطأ في الخادم', error: error.message });
+  }
+});
+
+// Get a message by ID
+router.get('/admin/get-message/:userId/:messageId', authMiddleware, adminMiddleware, async (req, res) => {
+  try {
+    const { userId, messageId } = req.params;
+    if (!userId || !messageId) {
+      return res.status(400).json({ message: 'معرف المستخدم ومعرف الرسالة مطلوبان' });
+    }
+    if (!mongoose.Types.ObjectId.isValid(userId) || !mongoose.Types.ObjectId.isValid(messageId)) {
+      return res.status(400).json({ message: 'معرف المستخدم أو معرف الرسالة غير صالح' });
+    }
+
+    const joinRequest = await JoinRequest.findById(userId);
+    if (!joinRequest) {
+      return res.status(404).json({ message: 'طلب الانضمام غير موجود' });
+    }
+
+    const targetUser = await User.findOne({ email: joinRequest.email.toLowerCase().trim() });
+    if (!targetUser) {
+      return res.status(404).json({ message: 'المستخدم غير موجود' });
+    }
+
+    const message = targetUser.messages.id(messageId);
+    if (!message) {
+      return res.status(404).json({ message: 'الرسالة غير موجودة' });
+    }
+
+    const now = new Date();
+    if (new Date(message.displayUntil) < now) {
+      return res.status(410).json({ message: 'الرسالة منتهية الصلاحية' });
+    }
+
+    console.log('تم جلب الرسالة:', { userId, messageId, email: joinRequest.email, content: message.content, displayUntil: message.displayUntil });
+
+    res.json({
+      success: true,
+      message: {
+        _id: message._id,
+        content: message.content,
+        displayUntil: message.displayUntil,
+      },
+    });
+  } catch (error) {
+    console.error('خطأ في جلب الرسالة:', error.message);
     res.status(500).json({ message: 'خطأ في الخادم', error: error.message });
   }
 });
