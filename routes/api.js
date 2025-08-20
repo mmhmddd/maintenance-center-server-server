@@ -138,39 +138,45 @@ router.get('/join-requests', authMiddleware, adminMiddleware, async (req, res) =
   }
 });
 
-// Approve a join request
 router.post('/join-requests/:id/approve', authMiddleware, adminMiddleware, async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
   try {
-    if (!process.env.GMAIL_USER || !process.env.GMAIL_APP_PASSWORD) {
+    // التحقق من وجود متغيرات البيئة لإعدادات البريد الإلكتروني
+    if (!process.env.SMTP_USER || !process.env.SMTP_PASS) {
       await session.abortTransaction();
       session.endSession();
       return res.status(500).json({ message: 'خطأ في إعدادات البريد الإلكتروني، تحقق من متغيرات البيئة' });
     }
 
+    // البحث عن طلب الانضمام باستخدام المعرف
     const joinRequest = await JoinRequest.findById(req.params.id).session(session);
     if (!joinRequest) {
       await session.abortTransaction();
       session.endSession();
       return res.status(404).json({ message: 'الطلب غير موجود' });
     }
+
+    // التحقق من أن الطلب في حالة "معلق"
     if (joinRequest.status !== 'Pending') {
       await session.abortTransaction();
       session.endSession();
       return res.status(400).json({ message: 'الطلب تم معالجته مسبقًا' });
     }
 
+    // تحديث حالة الطلب إلى "موافق عليه" وتعيين ساعات التطوع إلى 0
     joinRequest.status = 'Approved';
     joinRequest.volunteerHours = 0;
     await joinRequest.save({ session });
 
+    // التحقق من صحة البريد الإلكتروني
     if (!validator.isEmail(joinRequest.email)) {
       await session.abortTransaction();
       session.endSession();
       return res.status(400).json({ message: 'البريد الإلكتروني للطلب غير صالح' });
     }
 
+    // التحقق من عدم وجود مستخدم مسجل مسبقًا بنفس البريد الإلكتروني
     const existingUser = await User.findOne({ email: joinRequest.email }).session(session);
     if (existingUser) {
       await session.abortTransaction();
@@ -178,9 +184,11 @@ router.post('/join-requests/:id/approve', authMiddleware, adminMiddleware, async
       return res.status(400).json({ message: 'حساب المستخدم موجود بالفعل' });
     }
 
+    // إنشاء كلمة مرور عشوائية وتشفيرها
     const randomPassword = crypto.randomBytes(8).toString('hex');
     const hashedPassword = await hash(randomPassword, 10);
 
+    // إنشاء مستخدم جديد
     const user = new User({
       email: joinRequest.email.toLowerCase().trim(),
       password: hashedPassword,
@@ -197,6 +205,7 @@ router.post('/join-requests/:id/approve', authMiddleware, adminMiddleware, async
     await user.save({ session });
     console.log('تم إنشاء المستخدم:', user.email);
 
+    // إرسال بريد إلكتروني للمستخدم مع بيانات الاعتماد
     try {
       await sendEmail({
         to: joinRequest.email,
@@ -211,6 +220,7 @@ router.post('/join-requests/:id/approve', authMiddleware, adminMiddleware, async
       return res.status(500).json({ message: 'فشل في إرسال البريد الإلكتروني', error: emailError.message });
     }
 
+    // تأكيد المعاملة وإنهاء الجلسة
     await session.commitTransaction();
     session.endSession();
     res.json({
@@ -224,7 +234,6 @@ router.post('/join-requests/:id/approve', authMiddleware, adminMiddleware, async
     res.status(500).json({ message: 'فشل في الموافقة على الطلب', error: error.message });
   }
 });
-
 // Reject a join request
 router.post('/join-requests/:id/reject', authMiddleware, adminMiddleware, async (req, res) => {
   try {

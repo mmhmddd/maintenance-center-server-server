@@ -22,40 +22,45 @@ import forgetPasswordRoutes from './routes/forgotPassword.js';
 
 process.env.TZ = 'Africa/Cairo';
 
+// Load environment variables
 config();
 
 if (!process.env.MONGODB_URI) {
-  console.error('Error: MONGODB_URI is not defined in .env file');
-  process.exit(1);
-}
-if (!process.env.PORT) {
-  console.warn('Warning: PORT is not defined in .env file, defaulting to 5000');
-}
-if (!process.env.FRONTEND_URL) {
-  console.warn('Warning: FRONTEND_URL is not defined in .env file, defaulting to https://www.qatrah-ghaith.com');
-}
-if (!process.env.CLOUDINARY_CLOUD_NAME || !process.env.CLOUDINARY_API_KEY || !process.env.CLOUDINARY_API_SECRET) {
-  console.error('Error: Cloudinary credentials are missing in .env file');
-  process.exit(1);
-}
-if (!process.env.GMAIL_USER || !process.env.GMAIL_APP_PASSWORD) {
-  console.error('Error: Gmail credentials are missing in .env file');
+  console.error('❌ Error: MONGODB_URI is not defined in .env file');
   process.exit(1);
 }
 
-// Configure Cloudinary
+if (!process.env.CLOUDINARY_CLOUD_NAME || !process.env.CLOUDINARY_API_KEY || !process.env.CLOUDINARY_API_SECRET) {
+  console.error(' Error: Cloudinary credentials are missing in .env file');
+  process.exit(1);
+}
+
+if (!process.env.SMTP_USER || !process.env.SMTP_PASS || !process.env.SMTP_HOST || !process.env.SMTP_PORT) {
+  console.error(' Error: SMTP credentials are missing in .env file');
+  process.exit(1);
+}
+
+if (!process.env.PORT) {
+  console.warn('⚠️ Warning: PORT is not defined in .env file, defaulting to 5000');
+}
+if (!process.env.FRONTEND_URL) {
+  console.warn('⚠️ Warning: FRONTEND_URL is not defined in .env file, defaulting to https://www.qatrah-ghaith.com');
+}
+
 cloudinary.v2.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
   api_key: process.env.CLOUDINARY_API_KEY,
   api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
+
 connect(process.env.MONGODB_URI)
-  .then(() => console.log('Connected to MongoDB'))
+  .then(() => console.log('✅ Connected to MongoDB'))
   .catch((err) => {
-    console.error('MongoDB connection error:', err);
+    console.error('❌ MongoDB connection error:', err);
     process.exit(1);
   });
+
 
 const app = express();
 
@@ -68,6 +73,7 @@ app.use(cors({
 }));
 app.use(json());
 
+
 app.get('/api/Uploads/*', (req, res) => {
   console.log(`Old upload route requested: ${req.originalUrl}`);
   res.status(410).json({ message: 'هذا المسار القديم لم يعد مدعومًا. استخدم /api/gallery/images للصور.' });
@@ -75,23 +81,30 @@ app.get('/api/Uploads/*', (req, res) => {
 
 console.log('Registering Leaderboard routes at /api/leaderboard');
 app.use('/api/leaderboard', leaderboardRoutes);
+
 console.log('Registering API routes at /api');
 app.use('/api', apiRoutes);
+
 console.log('Registering PDF routes at /api/pdf');
 app.use('/api/pdf', pdfRoutes);
+
 console.log('Registering Testimonials routes at /api/testimonials');
 app.use('/api/testimonials', testimonialsRoutes);
+
 console.log('Registering Lecture routes at /api/lectures');
 app.use('/api/lectures', lectureRoutes);
+
 console.log('Registering Gallery routes at /api/gallery');
 app.use('/api/gallery', galleryRoutes);
+
 console.log('Registering Lecture Request routes at /api/lecture-requests');
 app.use('/api/lecture-requests', lectureRequestRoutes);
+
 console.log('Registering Forget Password routes at /api');
 app.use('/api', forgetPasswordRoutes);
 
 cron.schedule('1 0 * * *', async () => {
-  console.log('Checking daily meeting reminders at:', new Date().toLocaleString('ar-EG', { timeZone: 'Africa/Cairo' }));
+  console.log('⏰ Checking daily meeting reminders at:', new Date().toLocaleString('ar-EG', { timeZone: 'Africa/Cairo' }));
   try {
     const now = new Date();
     const nowUTC = new Date(now.getTime() - 3 * 60 * 60 * 1000); // EEST is UTC+3
@@ -152,7 +165,7 @@ cron.schedule('1 0 * * *', async () => {
             <p>تحياتنا،<br>فريق قطرة غيث</p>
           `,
         }).then(() => {
-          console.log(`Successfully sent daily reminder to ${user.email} for ${meetingsToRemind.length} meetings`);
+          console.log(`✅ Successfully sent daily reminder to ${user.email} for ${meetingsToRemind.length} meetings`);
           const updatePromises = meetingsToRemind.map(meeting =>
             User.updateOne(
               { _id: user._id, 'meetings._id': meeting._id },
@@ -161,7 +174,7 @@ cron.schedule('1 0 * * *', async () => {
           );
           return Promise.all(updatePromises);
         }).catch((error) => {
-          console.error(`Failed to send daily reminder to ${user.email}:`, error.message);
+          console.error(` Failed to send daily reminder to ${user.email}:`, error.message);
           throw error;
         })
       );
@@ -170,16 +183,16 @@ cron.schedule('1 0 * * *', async () => {
     await Promise.all(emailPromises);
     console.log(`Processed ${emailPromises.length} daily meeting reminders`);
   } catch (error) {
-    console.error('Error in daily meeting reminder cron job:', error.message, error.stack);
+    console.error(' Error in daily meeting reminder cron job:', error.message, error.stack);
   }
 });
 
-// Fallback for unmatched routes
+
 app.use((req, res) => {
   console.log(`Unmatched route: ${req.method} ${req.originalUrl}`);
   res.status(404).json({ message: `Cannot ${req.method} ${req.originalUrl}` });
 });
 
-// Start server
+
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, () => console.log(` Server running on port ${PORT}`));
